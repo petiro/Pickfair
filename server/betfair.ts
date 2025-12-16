@@ -1,5 +1,3 @@
-import https from "https";
-
 interface BetfairResponse<T> {
   result?: T;
   error?: {
@@ -24,11 +22,6 @@ interface AccountFunds {
   discountRate: number;
   pointsBalance: number;
   wallet: string;
-}
-
-interface EventType {
-  id: string;
-  name: string;
 }
 
 interface Event {
@@ -94,11 +87,6 @@ interface PlaceInstruction {
   };
 }
 
-interface PlaceOrdersRequest {
-  marketId: string;
-  instructions: PlaceInstruction[];
-}
-
 interface PlaceExecutionReport {
   status: string;
   marketId: string;
@@ -112,7 +100,7 @@ interface InstructionReport {
   errorCode?: string;
 }
 
-const BETFAIR_IT_CERT_LOGIN_URL = "https://identitysso-cert.betfair.it/api/certlogin";
+const BETFAIR_IT_LOGIN_URL = "https://identitysso.betfair.it/api/login";
 const BETFAIR_API_URL = "https://api.betfair.com/exchange/betting/rest/v1.0";
 const BETFAIR_ACCOUNT_URL = "https://api.betfair.com/exchange/account/rest/v1.0";
 
@@ -125,67 +113,65 @@ export class BetfairClient {
     this.sessionToken = sessionToken;
   }
 
-  static async loginWithCertificate(
+  static async login(
     appKey: string,
     username: string,
-    password: string,
-    certificate: string,
-    privateKey: string
+    password: string
   ): Promise<{ sessionToken: string; expiry: Date }> {
-    return new Promise((resolve, reject) => {
-      const postData = `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
-      
-      const options: https.RequestOptions = {
-        hostname: "identitysso-cert.betfair.it",
-        port: 443,
-        path: "/api/certlogin",
-        method: "POST",
-        cert: certificate,
-        key: privateKey,
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-Application": appKey,
-          "Content-Length": Buffer.byteLength(postData),
-        },
-        rejectUnauthorized: true,
-      };
-
-      const req = https.request(options, (res) => {
-        let data = "";
-
-        res.on("data", (chunk) => {
-          data += chunk;
-        });
-
-        res.on("end", () => {
-          try {
-            const response: LoginResponse = JSON.parse(data);
-
-            if (response.loginStatus !== "SUCCESS" || !response.sessionToken) {
-              reject(new Error(response.loginStatus || response.error || "Login failed"));
-              return;
-            }
-
-            const expiry = new Date();
-            expiry.setHours(expiry.getHours() + 8);
-
-            resolve({
-              sessionToken: response.sessionToken,
-              expiry,
-            });
-          } catch (e: any) {
-            reject(new Error(`Failed to parse response: ${data.substring(0, 200)}`));
-          }
-        });
-      });
-
-      req.on("error", (e) => {
-        reject(new Error(`Connection error: ${e.message}`));
-      });
-
-      req.write(postData);
-      req.end();
+    const response = await fetch(BETFAIR_IT_LOGIN_URL, {
+      method: "POST",
+      headers: {
+        "Accept": "application/json",
+        "X-Application": appKey,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
     });
+
+    const text = await response.text();
+    
+    let data: LoginResponse;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      throw new Error(`Risposta non valida da Betfair: ${text.substring(0, 100)}`);
+    }
+
+    if (data.status !== "SUCCESS") {
+      const errorMessage = data.error || data.status || "Login fallito";
+      
+      if (errorMessage.includes("INVALID_USERNAME_OR_PASSWORD")) {
+        throw new Error("Username o password non corretti");
+      }
+      if (errorMessage.includes("ACCOUNT_NOW_LOCKED")) {
+        throw new Error("Account bloccato. Contatta Betfair");
+      }
+      if (errorMessage.includes("ACCOUNT_ALREADY_LOCKED")) {
+        throw new Error("Account gia bloccato");
+      }
+      if (errorMessage.includes("INPUT_VALIDATION_ERROR")) {
+        throw new Error("Dati non validi. Controlla username e password");
+      }
+      if (errorMessage.includes("CERT_AUTH_REQUIRED")) {
+        throw new Error("Autenticazione certificato richiesta. La tua App Key richiede whitelisting - contatta Betfair");
+      }
+      if (errorMessage.includes("CHANGE_PASSWORD_REQUIRED")) {
+        throw new Error("Cambio password richiesto. Accedi a betfair.it per cambiare la password");
+      }
+      
+      throw new Error(errorMessage);
+    }
+
+    const sessionToken = data.token || data.sessionToken;
+    
+    if (!sessionToken) {
+      throw new Error("Token di sessione non ricevuto");
+    }
+
+    const expiry = new Date();
+    expiry.setMinutes(expiry.getMinutes() + 20);
+
+    return { sessionToken, expiry };
   }
 
   private async request<T>(
@@ -196,7 +182,7 @@ export class BetfairClient {
     const response = await fetch(`${baseUrl}/${endpoint}/`, {
       method: "POST",
       headers: {
-        Accept: "application/json",
+        "Accept": "application/json",
         "Content-Type": "application/json",
         "X-Application": this.appKey,
         "X-Authentication": this.sessionToken,
@@ -205,7 +191,7 @@ export class BetfairClient {
     });
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status} ${response.statusText}`);
+      throw new Error(`Errore API: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json();

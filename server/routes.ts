@@ -5,15 +5,10 @@ import { isAuthenticated } from "./replit_integrations/auth";
 import { BetfairClient } from "./betfair";
 import { z } from "zod";
 
-const uploadCertificateSchema = z.object({
-  appKey: z.string().min(1, "Application Key required"),
-  certificate: z.string().min(1, "Certificate required"),
-  privateKey: z.string().min(1, "Private key required"),
-});
-
 const connectSchema = z.object({
-  username: z.string().min(1, "Username required"),
-  password: z.string().min(1, "Password required"),
+  appKey: z.string().min(1, "Application Key obbligatoria"),
+  username: z.string().min(1, "Username obbligatorio"),
+  password: z.string().min(1, "Password obbligatoria"),
 });
 
 const placeBetsSchema = z.object({
@@ -25,8 +20,8 @@ const placeBetsSchema = z.object({
     selectionId: z.number(),
     selectionName: z.string(),
     price: z.number().positive(),
-    stake: z.number().min(2, "Minimum stake is €2.00"),
-  })).min(1, "At least one selection required"),
+    stake: z.number().min(2, "Stake minimo €2.00"),
+  })).min(1, "Almeno una selezione richiesta"),
   totalStake: z.number().positive(),
   totalLiability: z.number().optional(),
 });
@@ -40,7 +35,7 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       const settings = await storage.getBetfairSettings(userId);
@@ -48,8 +43,7 @@ export async function registerRoutes(
       if (!settings?.sessionToken || !settings?.sessionExpiry) {
         return res.json({ 
           connected: false, 
-          message: "No active session",
-          hasCertificate: !!(settings?.certificate && settings?.privateKey),
+          message: "Nessuna sessione attiva",
           hasAppKey: !!settings?.appKey,
         });
       }
@@ -58,17 +52,15 @@ export async function registerRoutes(
       if (new Date(settings.sessionExpiry) < now) {
         return res.json({ 
           connected: false, 
-          message: "Session expired",
-          hasCertificate: !!(settings?.certificate && settings?.privateKey),
+          message: "Sessione scaduta",
           hasAppKey: !!settings?.appKey,
         });
       }
 
       res.json({
         connected: true,
-        message: "Connected",
+        message: "Connesso",
         sessionExpiry: settings.sessionExpiry,
-        hasCertificate: !!(settings?.certificate && settings?.privateKey),
         hasAppKey: !!settings?.appKey,
       });
     } catch (error: any) {
@@ -80,41 +72,16 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       const settings = await storage.getBetfairSettings(userId);
       
       res.json({
         appKey: settings?.appKey || "",
-        hasCertificate: !!(settings?.certificate && settings?.privateKey),
         sessionToken: settings?.sessionToken ? "***" : null,
         sessionExpiry: settings?.sessionExpiry,
       });
-    } catch (error: any) {
-      res.status(500).json({ message: error.message });
-    }
-  });
-
-  app.post("/api/betfair/upload-certificate", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user?.claims?.sub;
-      if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-
-      const validation = uploadCertificateSchema.safeParse(req.body);
-      if (!validation.success) {
-        return res.status(400).json({ 
-          message: validation.error.errors[0]?.message || "Invalid request" 
-        });
-      }
-
-      const { appKey, certificate, privateKey } = validation.data;
-
-      await storage.updateBetfairCertificate(userId, appKey, certificate, privateKey);
-
-      res.json({ success: true, message: "Certificate uploaded successfully" });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -124,39 +91,34 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       const validation = connectSchema.safeParse(req.body);
       if (!validation.success) {
         return res.status(400).json({ 
-          message: validation.error.errors[0]?.message || "Invalid request" 
+          message: validation.error.errors[0]?.message || "Richiesta non valida" 
         });
       }
 
-      const { username, password } = validation.data;
+      const { appKey, username, password } = validation.data;
 
-      const settings = await storage.getBetfairSettings(userId);
-      
-      if (!settings?.appKey || !settings?.certificate || !settings?.privateKey) {
-        return res.status(400).json({ 
-          message: "Please upload your certificate and App Key first" 
-        });
-      }
-
-      const { sessionToken, expiry } = await BetfairClient.loginWithCertificate(
-        settings.appKey,
+      const { sessionToken, expiry } = await BetfairClient.login(
+        appKey,
         username,
-        password,
-        settings.certificate,
-        settings.privateKey
+        password
       );
 
-      await storage.updateBetfairSession(userId, sessionToken, expiry);
+      await storage.upsertBetfairSettings({
+        userId,
+        appKey,
+        sessionToken,
+        sessionExpiry: expiry,
+      });
 
       res.json({ success: true, sessionExpiry: expiry });
     } catch (error: any) {
-      res.status(400).json({ message: error.message || "Connection failed" });
+      res.status(400).json({ message: error.message || "Connessione fallita" });
     }
   });
 
@@ -164,7 +126,7 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       await storage.updateBetfairSession(userId, null, null);
@@ -179,13 +141,13 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       const settings = await storage.getBetfairSettings(userId);
       
       if (!settings?.sessionToken || !settings?.appKey) {
-        return res.status(400).json({ message: "Not connected to Betfair" });
+        return res.status(400).json({ message: "Non connesso a Betfair" });
       }
 
       const client = new BetfairClient(settings.appKey, settings.sessionToken);
@@ -201,13 +163,13 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       const settings = await storage.getBetfairSettings(userId);
       
       if (!settings?.sessionToken || !settings?.appKey) {
-        return res.status(400).json({ message: "Not connected to Betfair" });
+        return res.status(400).json({ message: "Non connesso a Betfair" });
       }
 
       const competitionId = req.query.competitionId as string | undefined;
@@ -225,13 +187,13 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       const settings = await storage.getBetfairSettings(userId);
       
       if (!settings?.sessionToken || !settings?.appKey) {
-        return res.status(400).json({ message: "Not connected to Betfair" });
+        return res.status(400).json({ message: "Non connesso a Betfair" });
       }
 
       const client = new BetfairClient(settings.appKey, settings.sessionToken);
@@ -247,26 +209,26 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       const eventId = req.query.eventId as string | undefined;
       
       if (!eventId) {
-        return res.status(400).json({ message: "Event ID required" });
+        return res.status(400).json({ message: "Event ID richiesto" });
       }
 
       const settings = await storage.getBetfairSettings(userId);
       
       if (!settings?.sessionToken || !settings?.appKey) {
-        return res.status(400).json({ message: "Not connected to Betfair" });
+        return res.status(400).json({ message: "Non connesso a Betfair" });
       }
 
       const client = new BetfairClient(settings.appKey, settings.sessionToken);
       const market = await client.getCorrectScoreMarket(eventId);
       
       if (!market) {
-        return res.status(404).json({ message: "Market not found" });
+        return res.status(404).json({ message: "Mercato non trovato" });
       }
 
       res.json(market);
@@ -279,13 +241,13 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       const validation = placeBetsSchema.safeParse(req.body);
       if (!validation.success) {
         return res.status(400).json({ 
-          message: validation.error.errors[0]?.message || "Invalid request" 
+          message: validation.error.errors[0]?.message || "Richiesta non valida" 
         });
       }
 
@@ -294,7 +256,7 @@ export async function registerRoutes(
       const settings = await storage.getBetfairSettings(userId);
       
       if (!settings?.sessionToken || !settings?.appKey) {
-        return res.status(400).json({ message: "Not connected to Betfair" });
+        return res.status(400).json({ message: "Non connesso a Betfair" });
       }
 
       const client = new BetfairClient(settings.appKey, settings.sessionToken);
@@ -330,7 +292,7 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       const bets = await storage.getBets(userId);
@@ -344,7 +306,7 @@ export async function registerRoutes(
     try {
       const userId = req.user?.claims?.sub;
       if (!userId) {
-        return res.status(401).json({ message: "Unauthorized" });
+        return res.status(401).json({ message: "Non autorizzato" });
       }
 
       const limit = parseInt(req.query.limit as string) || 10;
