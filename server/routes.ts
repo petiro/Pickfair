@@ -5,8 +5,13 @@ import { isAuthenticated } from "./replit_integrations/auth";
 import { BetfairClient } from "./betfair";
 import { z } from "zod";
 
-const connectSchema = z.object({
+const uploadCertificateSchema = z.object({
   appKey: z.string().min(1, "Application Key required"),
+  certificate: z.string().min(1, "Certificate required"),
+  privateKey: z.string().min(1, "Private key required"),
+});
+
+const connectSchema = z.object({
   username: z.string().min(1, "Username required"),
   password: z.string().min(1, "Password required"),
 });
@@ -41,18 +46,30 @@ export async function registerRoutes(
       const settings = await storage.getBetfairSettings(userId);
       
       if (!settings?.sessionToken || !settings?.sessionExpiry) {
-        return res.json({ connected: false, message: "No active session" });
+        return res.json({ 
+          connected: false, 
+          message: "No active session",
+          hasCertificate: !!(settings?.certificate && settings?.privateKey),
+          hasAppKey: !!settings?.appKey,
+        });
       }
 
       const now = new Date();
       if (new Date(settings.sessionExpiry) < now) {
-        return res.json({ connected: false, message: "Session expired" });
+        return res.json({ 
+          connected: false, 
+          message: "Session expired",
+          hasCertificate: !!(settings?.certificate && settings?.privateKey),
+          hasAppKey: !!settings?.appKey,
+        });
       }
 
       res.json({
         connected: true,
         message: "Connected",
         sessionExpiry: settings.sessionExpiry,
+        hasCertificate: !!(settings?.certificate && settings?.privateKey),
+        hasAppKey: !!settings?.appKey,
       });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -70,9 +87,34 @@ export async function registerRoutes(
       
       res.json({
         appKey: settings?.appKey || "",
+        hasCertificate: !!(settings?.certificate && settings?.privateKey),
         sessionToken: settings?.sessionToken ? "***" : null,
         sessionExpiry: settings?.sessionExpiry,
       });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.post("/api/betfair/upload-certificate", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user?.claims?.sub;
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
+      const validation = uploadCertificateSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: validation.error.errors[0]?.message || "Invalid request" 
+        });
+      }
+
+      const { appKey, certificate, privateKey } = validation.data;
+
+      await storage.updateBetfairCertificate(userId, appKey, certificate, privateKey);
+
+      res.json({ success: true, message: "Certificate uploaded successfully" });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -92,20 +134,25 @@ export async function registerRoutes(
         });
       }
 
-      const { appKey, username, password } = validation.data;
+      const { username, password } = validation.data;
 
-      const { sessionToken, expiry } = await BetfairClient.login(
-        appKey,
+      const settings = await storage.getBetfairSettings(userId);
+      
+      if (!settings?.appKey || !settings?.certificate || !settings?.privateKey) {
+        return res.status(400).json({ 
+          message: "Please upload your certificate and App Key first" 
+        });
+      }
+
+      const { sessionToken, expiry } = await BetfairClient.loginWithCertificate(
+        settings.appKey,
         username,
-        password
+        password,
+        settings.certificate,
+        settings.privateKey
       );
 
-      await storage.upsertBetfairSettings({
-        userId,
-        appKey,
-        sessionToken,
-        sessionExpiry: expiry,
-      });
+      await storage.updateBetfairSession(userId, sessionToken, expiry);
 
       res.json({ success: true, sessionExpiry: expiry });
     } catch (error: any) {

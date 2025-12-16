@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Form,
   FormControl,
@@ -31,18 +31,28 @@ import {
   RefreshCw,
   Shield,
   ExternalLink,
+  Upload,
+  FileKey,
+  Lock,
 } from "lucide-react";
 
-const settingsSchema = z.object({
+const certificateSchema = z.object({
   appKey: z.string().min(1, "Application Key obbligatorio"),
+  certificate: z.string().min(1, "Certificato obbligatorio"),
+  privateKey: z.string().min(1, "Chiave privata obbligatoria"),
+});
+
+const loginSchema = z.object({
   username: z.string().min(1, "Username obbligatorio"),
   password: z.string().min(1, "Password obbligatoria"),
 });
 
-type SettingsFormData = z.infer<typeof settingsSchema>;
+type CertificateFormData = z.infer<typeof certificateSchema>;
+type LoginFormData = z.infer<typeof loginSchema>;
 
 interface BetfairSettings {
   appKey: string;
+  hasCertificate: boolean;
   sessionToken: string | null;
   sessionExpiry: string | null;
 }
@@ -51,12 +61,16 @@ interface ConnectionStatus {
   connected: boolean;
   message: string;
   sessionExpiry?: string;
+  hasCertificate?: boolean;
+  hasAppKey?: boolean;
 }
 
 export default function Settings() {
   const { toast } = useToast();
   const [showPassword, setShowPassword] = useState(false);
   const [showAppKey, setShowAppKey] = useState(false);
+  const certInputRef = useRef<HTMLInputElement>(null);
+  const keyInputRef = useRef<HTMLInputElement>(null);
 
   const { data: settings, isLoading: settingsLoading } = useQuery<BetfairSettings>({
     queryKey: ["/api/betfair/settings"],
@@ -70,23 +84,45 @@ export default function Settings() {
     staleTime: 30000,
   });
 
-  const form = useForm<SettingsFormData>({
-    resolver: zodResolver(settingsSchema),
+  const certificateForm = useForm<CertificateFormData>({
+    resolver: zodResolver(certificateSchema),
     defaultValues: {
-      appKey: "",
+      appKey: settings?.appKey || "",
+      certificate: "",
+      privateKey: "",
+    },
+  });
+
+  const loginForm = useForm<LoginFormData>({
+    resolver: zodResolver(loginSchema),
+    defaultValues: {
       username: "",
       password: "",
     },
   });
 
-  useEffect(() => {
-    if (settings?.appKey) {
-      form.setValue("appKey", settings.appKey);
-    }
-  }, [settings, form]);
+  const uploadCertificateMutation = useMutation({
+    mutationFn: async (data: CertificateFormData) => {
+      return apiRequest("POST", "/api/betfair/upload-certificate", data);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Certificato Caricato",
+        description: "Il certificato SSL e stata salvato. Ora puoi effettuare il login.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/betfair"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Errore Caricamento",
+        description: error.message || "Impossibile caricare il certificato",
+        variant: "destructive",
+      });
+    },
+  });
 
   const connectMutation = useMutation({
-    mutationFn: async (data: SettingsFormData) => {
+    mutationFn: async (data: LoginFormData) => {
       return apiRequest("POST", "/api/betfair/connect", data);
     },
     onSuccess: () => {
@@ -95,7 +131,7 @@ export default function Settings() {
         description: "Sei connesso a Betfair Exchange Italy",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/betfair"] });
-      form.reset({ appKey: form.getValues("appKey"), username: "", password: "" });
+      loginForm.reset();
     },
     onError: (error: Error) => {
       toast({
@@ -126,7 +162,23 @@ export default function Settings() {
     },
   });
 
-  const onSubmit = (data: SettingsFormData) => {
+  const handleFileRead = (
+    file: File,
+    fieldName: "certificate" | "privateKey"
+  ) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target?.result as string;
+      certificateForm.setValue(fieldName, content);
+    };
+    reader.readAsText(file);
+  };
+
+  const onCertificateSubmit = (data: CertificateFormData) => {
+    uploadCertificateMutation.mutate(data);
+  };
+
+  const onLoginSubmit = (data: LoginFormData) => {
     connectMutation.mutate(data);
   };
 
@@ -180,7 +232,7 @@ export default function Settings() {
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 {status?.connected ? (
                   <>
                     <Badge variant="default" className="gap-1">
@@ -201,6 +253,20 @@ export default function Settings() {
                       {status?.message || "Nessuna sessione attiva"}
                     </span>
                   </>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {status?.hasCertificate ? (
+                  <Badge variant="outline" className="gap-1">
+                    <FileKey className="w-3 h-3" />
+                    Certificato configurato
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary" className="gap-1">
+                    <FileKey className="w-3 h-3" />
+                    Certificato non configurato
+                  </Badge>
                 )}
               </div>
               
@@ -228,18 +294,18 @@ export default function Settings() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Key className="w-5 h-5" />
-            Credenziali Betfair
+            <FileKey className="w-5 h-5" />
+            Passo 1: Certificato SSL
           </CardTitle>
           <CardDescription>
-            Inserisci le tue credenziali per Betfair.it Exchange
+            Betfair Italy richiede l'autenticazione con certificato SSL per i bot automatici
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+          <Form {...certificateForm}>
+            <form onSubmit={certificateForm.handleSubmit(onCertificateSubmit)} className="space-y-6">
               <FormField
-                control={form.control}
+                control={certificateForm.control}
                 name="appKey"
                 render={({ field }) => (
                   <FormItem>
@@ -270,7 +336,7 @@ export default function Settings() {
                     <FormDescription>
                       Trova la tua App Key nel{" "}
                       <a
-                        href="https://myaccount.betfair.it/s/accountdetails/mysecurity"
+                        href="https://myaccount.betfair.it/accountdetails/mysecurity"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary inline-flex items-center gap-1"
@@ -285,54 +351,91 @@ export default function Settings() {
               />
 
               <FormField
-                control={form.control}
-                name="username"
+                control={certificateForm.control}
+                name="certificate"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Username Betfair</FormLabel>
+                    <FormLabel>Certificato SSL (.crt)</FormLabel>
                     <FormControl>
-                      <Input
-                        {...field}
-                        placeholder="Il tuo username Betfair.it"
-                        data-testid="input-username"
-                      />
+                      <div className="space-y-2">
+                        <input
+                          ref={certInputRef}
+                          type="file"
+                          accept=".crt,.pem,.cer"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handleFileRead(file, "certificate");
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => certInputRef.current?.click()}
+                          className="gap-2 w-full"
+                        >
+                          <Upload className="w-4 h-4" />
+                          {field.value ? "Certificato caricato" : "Carica certificato (.crt)"}
+                        </Button>
+                        {field.value && (
+                          <Textarea
+                            {...field}
+                            rows={4}
+                            className="font-mono text-xs"
+                            placeholder="-----BEGIN CERTIFICATE-----"
+                            data-testid="textarea-certificate"
+                          />
+                        )}
+                      </div>
                     </FormControl>
+                    <FormDescription>
+                      Il file client-2048.crt generato con OpenSSL
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
 
               <FormField
-                control={form.control}
-                name="password"
+                control={certificateForm.control}
+                name="privateKey"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Password</FormLabel>
+                    <FormLabel>Chiave Privata (.key)</FormLabel>
                     <FormControl>
-                      <div className="relative">
-                        <Input
-                          {...field}
-                          type={showPassword ? "text" : "password"}
-                          placeholder="La tua password Betfair.it"
-                          data-testid="input-password"
+                      <div className="space-y-2">
+                        <input
+                          ref={keyInputRef}
+                          type="file"
+                          accept=".key,.pem"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handleFileRead(file, "privateKey");
+                          }}
                         />
                         <Button
                           type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="absolute right-0 top-0 h-full"
-                          onClick={() => setShowPassword(!showPassword)}
+                          variant="outline"
+                          onClick={() => keyInputRef.current?.click()}
+                          className="gap-2 w-full"
                         >
-                          {showPassword ? (
-                            <EyeOff className="w-4 h-4" />
-                          ) : (
-                            <Eye className="w-4 h-4" />
-                          )}
+                          <Lock className="w-4 h-4" />
+                          {field.value ? "Chiave caricata" : "Carica chiave privata (.key)"}
                         </Button>
+                        {field.value && (
+                          <Textarea
+                            {...field}
+                            rows={4}
+                            className="font-mono text-xs"
+                            placeholder="-----BEGIN RSA PRIVATE KEY-----"
+                            data-testid="textarea-private-key"
+                          />
+                        )}
                       </div>
                     </FormControl>
                     <FormDescription>
-                      La password non viene salvata, viene usata solo per il login
+                      Il file client-2048.key generato con OpenSSL
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -342,18 +445,18 @@ export default function Settings() {
               <Button
                 type="submit"
                 className="w-full gap-2"
-                disabled={connectMutation.isPending}
-                data-testid="button-connect"
+                disabled={uploadCertificateMutation.isPending}
+                data-testid="button-upload-certificate"
               >
-                {connectMutation.isPending ? (
+                {uploadCertificateMutation.isPending ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Connessione in corso...
+                    Caricamento...
                   </>
                 ) : (
                   <>
-                    <Shield className="w-4 h-4" />
-                    Connetti a Betfair
+                    <Upload className="w-4 h-4" />
+                    Salva Certificato
                   </>
                 )}
               </Button>
@@ -362,26 +465,148 @@ export default function Settings() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Key className="w-5 h-5" />
+            Passo 2: Login Betfair
+          </CardTitle>
+          <CardDescription>
+            Inserisci le credenziali del tuo account Betfair.it
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {!status?.hasCertificate ? (
+            <div className="text-center py-8 text-muted-foreground">
+              <FileKey className="w-12 h-12 mx-auto mb-3 opacity-50" />
+              <p className="font-medium">Certificato non configurato</p>
+              <p className="text-sm mt-1">
+                Carica il certificato SSL nel passo precedente
+              </p>
+            </div>
+          ) : (
+            <Form {...loginForm}>
+              <form onSubmit={loginForm.handleSubmit(onLoginSubmit)} className="space-y-6">
+                <FormField
+                  control={loginForm.control}
+                  name="username"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Username Betfair</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          placeholder="Il tuo username Betfair.it"
+                          data-testid="input-username"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={loginForm.control}
+                  name="password"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Password</FormLabel>
+                      <FormControl>
+                        <div className="relative">
+                          <Input
+                            {...field}
+                            type={showPassword ? "text" : "password"}
+                            placeholder="La tua password Betfair.it"
+                            data-testid="input-password"
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="absolute right-0 top-0 h-full"
+                            onClick={() => setShowPassword(!showPassword)}
+                          >
+                            {showPassword ? (
+                              <EyeOff className="w-4 h-4" />
+                            ) : (
+                              <Eye className="w-4 h-4" />
+                            )}
+                          </Button>
+                        </div>
+                      </FormControl>
+                      <FormDescription>
+                        La password non viene salvata, viene usata solo per il login
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <Button
+                  type="submit"
+                  className="w-full gap-2"
+                  disabled={connectMutation.isPending}
+                  data-testid="button-connect"
+                >
+                  {connectMutation.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Connessione in corso...
+                    </>
+                  ) : (
+                    <>
+                      <Shield className="w-4 h-4" />
+                      Connetti a Betfair
+                    </>
+                  )}
+                </Button>
+              </form>
+            </Form>
+          )}
+        </CardContent>
+      </Card>
+
       <Card className="bg-muted/50">
         <CardHeader>
-          <CardTitle className="text-base">Informazioni Importanti</CardTitle>
+          <CardTitle className="text-base">Come Generare il Certificato</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3 text-sm text-muted-foreground">
+        <CardContent className="space-y-4 text-sm text-muted-foreground">
           <p>
-            Questa applicazione utilizza l&apos;API ufficiale di Betfair Exchange Italy.
+            Per utilizzare l&apos;API di Betfair Italy Exchange, devi creare un certificato SSL self-signed:
           </p>
+          <div className="bg-background/50 p-4 rounded-md font-mono text-xs space-y-2">
+            <p># 1. Genera la chiave privata</p>
+            <p className="text-foreground">openssl genrsa -out client-2048.key 2048</p>
+            <p className="mt-3"># 2. Crea il certificato self-signed</p>
+            <p className="text-foreground">openssl req -new -x509 -days 365 -key client-2048.key -out client-2048.crt</p>
+          </div>
           <p>
+            <strong>Importante:</strong> Dopo aver generato il certificato, devi caricarlo sul tuo account Betfair:
+          </p>
+          <ol className="list-decimal list-inside space-y-1 ml-2">
+            <li>
+              Vai su{" "}
+              <a
+                href="https://myaccount.betfair.it/accountdetails/mysecurity"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary inline-flex items-center gap-1"
+              >
+                La Mia Sicurezza
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </li>
+            <li>Scorri fino a "Automated Betting Program Access"</li>
+            <li>Clicca "Edit" e carica il file client-2048.crt</li>
+          </ol>
+          <p className="pt-2">
             <strong>Limiti Italian Exchange:</strong>
           </p>
           <ul className="list-disc list-inside space-y-1 ml-2">
-            <li>Stake minimo BACK: &euro;2.00 (incrementi di &euro;0.50)</li>
-            <li>Vincita massima per scommessa: &euro;10,000</li>
+            <li>Stake minimo BACK: 2.00 (incrementi di 0.50)</li>
+            <li>Vincita massima per scommessa: 10,000</li>
             <li>Massimo 50 istruzioni per richiesta</li>
           </ul>
-          <p>
-            Le tue credenziali sono trasmesse in modo sicuro e la password
-            non viene mai memorizzata.
-          </p>
         </CardContent>
       </Card>
     </div>

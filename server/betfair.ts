@@ -1,3 +1,5 @@
+import https from "https";
+
 interface BetfairResponse<T> {
   result?: T;
   error?: {
@@ -110,7 +112,7 @@ interface InstructionReport {
   errorCode?: string;
 }
 
-const BETFAIR_IT_LOGIN_URL = "https://identitysso.betfair.it/api/login";
+const BETFAIR_IT_CERT_LOGIN_URL = "https://identitysso-cert.betfair.it/api/certlogin";
 const BETFAIR_API_URL = "https://api.betfair.com/exchange/betting/rest/v1.0";
 const BETFAIR_ACCOUNT_URL = "https://api.betfair.com/exchange/account/rest/v1.0";
 
@@ -123,32 +125,67 @@ export class BetfairClient {
     this.sessionToken = sessionToken;
   }
 
-  static async login(
+  static async loginWithCertificate(
     appKey: string,
     username: string,
-    password: string
+    password: string,
+    certificate: string,
+    privateKey: string
   ): Promise<{ sessionToken: string; expiry: Date }> {
-    const response = await fetch(BETFAIR_IT_LOGIN_URL, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "X-Application": appKey,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
+    return new Promise((resolve, reject) => {
+      const postData = `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+      
+      const options: https.RequestOptions = {
+        hostname: "identitysso-cert.betfair.it",
+        port: 443,
+        path: "/api/certlogin",
+        method: "POST",
+        cert: certificate,
+        key: privateKey,
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Application": appKey,
+          "Content-Length": Buffer.byteLength(postData),
+        },
+        rejectUnauthorized: true,
+      };
+
+      const req = https.request(options, (res) => {
+        let data = "";
+
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
+
+        res.on("end", () => {
+          try {
+            const response: LoginResponse = JSON.parse(data);
+
+            if (response.loginStatus !== "SUCCESS" || !response.sessionToken) {
+              reject(new Error(response.loginStatus || response.error || "Login failed"));
+              return;
+            }
+
+            const expiry = new Date();
+            expiry.setHours(expiry.getHours() + 8);
+
+            resolve({
+              sessionToken: response.sessionToken,
+              expiry,
+            });
+          } catch (e: any) {
+            reject(new Error(`Failed to parse response: ${data.substring(0, 200)}`));
+          }
+        });
+      });
+
+      req.on("error", (e) => {
+        reject(new Error(`Connection error: ${e.message}`));
+      });
+
+      req.write(postData);
+      req.end();
     });
-
-    const data: LoginResponse = await response.json();
-
-    if (data.status !== "SUCCESS" || (!data.token && !data.sessionToken)) {
-      throw new Error(data.error || "Login failed");
-    }
-
-    const sessionToken = data.token || data.sessionToken!;
-    const expiry = new Date();
-    expiry.setHours(expiry.getHours() + 8);
-
-    return { sessionToken, expiry };
   }
 
   private async request<T>(

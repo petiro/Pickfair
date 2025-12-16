@@ -19,6 +19,7 @@ export interface IStorage {
   getBetfairSettings(userId: string): Promise<BetfairSettings | undefined>;
   upsertBetfairSettings(settings: InsertBetfairSettings): Promise<BetfairSettings>;
   updateBetfairSession(userId: string, sessionToken: string | null, sessionExpiry: Date | null): Promise<void>;
+  updateBetfairCertificate(userId: string, appKey: string, certificate: string, privateKey: string): Promise<void>;
   
   createBet(bet: InsertBet): Promise<Bet>;
   getBets(userId: string): Promise<Bet[]>;
@@ -86,6 +87,34 @@ export class DatabaseStorage implements IStorage {
         updatedAt: new Date(),
       })
       .where(eq(betfairSettings.userId, userId));
+  }
+
+  async updateBetfairCertificate(
+    userId: string,
+    appKey: string,
+    certificate: string,
+    privateKey: string
+  ): Promise<void> {
+    const existing = await this.getBetfairSettings(userId);
+    
+    if (existing) {
+      await db
+        .update(betfairSettings)
+        .set({
+          appKey,
+          certificate,
+          privateKey,
+          updatedAt: new Date(),
+        })
+        .where(eq(betfairSettings.userId, userId));
+    } else {
+      await db.insert(betfairSettings).values({
+        userId,
+        appKey,
+        certificate,
+        privateKey,
+      });
+    }
   }
 
   async createBet(bet: InsertBet): Promise<Bet> {

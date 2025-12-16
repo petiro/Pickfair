@@ -11,6 +11,8 @@ export const betfairSettings = pgTable("betfair_settings", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique().references(() => users.id),
   appKey: text("app_key"),
+  certificate: text("certificate"),
+  privateKey: text("private_key"),
   sessionToken: text("session_token"),
   sessionExpiry: timestamp("session_expiry"),
   createdAt: timestamp("created_at").defaultNow(),
