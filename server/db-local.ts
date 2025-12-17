@@ -6,9 +6,10 @@ import { fileURLToPath } from "url";
 // Handle both ESM and CJS contexts for Electron production build
 let baseDir: string;
 const isElectronPackaged = process.env.ELECTRON_PACKAGED === 'true';
+const resourcesPath = (process as any).resourcesPath;
 
-if (isElectronPackaged && process.resourcesPath) {
-  baseDir = process.resourcesPath;
+if (isElectronPackaged && resourcesPath) {
+  baseDir = resourcesPath;
 } else if (typeof __dirname !== 'undefined' && __dirname) {
   baseDir = path.join(__dirname, "..");
 } else {

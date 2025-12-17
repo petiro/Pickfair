@@ -15,7 +15,7 @@ app.use(express.urlencoded({ extended: false }));
 
 // Determine base path
 const isPackaged = process.env.ELECTRON_PACKAGED === 'true';
-const basePath = isPackaged ? process.resourcesPath! : path.join(import.meta.dirname, '..');
+const basePath = isPackaged ? (process as any).resourcesPath : path.join(import.meta.dirname, '..');
 
 // Logging middleware
 app.use((req, res, next) => {
@@ -92,11 +92,7 @@ const uploadCertificateSchema = z.object({
 app.post("/api/betfair/certificate", async (req, res) => {
   try {
     const data = uploadCertificateSchema.parse(req.body);
-    localStorage.saveBetfairSettings(LOCAL_USER_ID, {
-      app_key: data.appKey,
-      certificate: data.certificate,
-      private_key: data.privateKey,
-    });
+    localStorage.updateBetfairCertificate(LOCAL_USER_ID, data.appKey, data.certificate, data.privateKey);
     res.json({ success: true, message: "Certificato salvato" });
   } catch (error: any) {
     res.status(400).json({ message: error.message || "Errore nel salvare il certificato" });
@@ -126,11 +122,7 @@ app.post("/api/betfair/connect", async (req, res) => {
       settings.private_key
     );
 
-    localStorage.saveBetfairSettings(LOCAL_USER_ID, {
-      ...settings,
-      session_token: result.sessionToken,
-      session_expiry: result.expiry.toISOString(),
-    });
+    localStorage.updateBetfairSession(LOCAL_USER_ID, result.sessionToken, result.expiry);
 
     res.json({ success: true, message: "Connesso a Betfair", expiresAt: result.expiry });
   } catch (error: any) {
@@ -141,14 +133,7 @@ app.post("/api/betfair/connect", async (req, res) => {
 
 // Disconnect
 app.post("/api/betfair/disconnect", (req, res) => {
-  const settings = localStorage.getBetfairSettings(LOCAL_USER_ID);
-  if (settings) {
-    localStorage.saveBetfairSettings(LOCAL_USER_ID, {
-      ...settings,
-      session_token: null,
-      session_expiry: null,
-    });
-  }
+  localStorage.updateBetfairSession(LOCAL_USER_ID, null, null);
   res.json({ success: true });
 });
 
@@ -184,25 +169,13 @@ app.get("/api/betfair/football/events", async (req, res) => {
   }
 });
 
-// Markets for event
+// Markets for event (returns correct score market with prices)
 app.get("/api/betfair/markets/:eventId", async (req, res) => {
   const client = getBetfairClient();
   if (!client) return res.status(400).json({ message: "Non connesso a Betfair" });
   try {
-    const markets = await client.getCorrectScoreMarkets(req.params.eventId);
-    res.json(markets);
-  } catch (error: any) {
-    res.status(400).json({ message: error.message });
-  }
-});
-
-// Market prices
-app.get("/api/betfair/market-prices/:marketId", async (req, res) => {
-  const client = getBetfairClient();
-  if (!client) return res.status(400).json({ message: "Non connesso a Betfair" });
-  try {
-    const prices = await client.getMarketPrices(req.params.marketId);
-    res.json(prices);
+    const market = await client.getCorrectScoreMarket(req.params.eventId);
+    res.json(market);
   } catch (error: any) {
     res.status(400).json({ message: error.message });
   }
@@ -230,15 +203,15 @@ app.post("/api/betfair/place-bets", async (req, res) => {
     const result = await client.placeOrders(marketId, instructions);
     
     // Log bet to history
-    localStorage.saveBet(LOCAL_USER_ID, {
-      event_name: eventName,
-      market_id: marketId,
-      market_name: marketName,
-      bet_type: betType,
-      selections: JSON.stringify(selections),
-      total_stake: totalStake,
+    localStorage.createBet({
+      userId: LOCAL_USER_ID,
+      marketId: marketId,
+      eventName: eventName,
+      marketName: marketName,
+      betType: betType,
+      selections: selections,
+      totalStake: String(totalStake),
       status: result.status === "SUCCESS" ? "placed" : "failed",
-      placed_at: new Date().toISOString(),
     });
 
     res.json(result);
