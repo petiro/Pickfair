@@ -37,6 +37,11 @@ export async function registerLocalRoutes(
   app: Express
 ): Promise<Server> {
   
+  // Health check endpoint for Electron
+  app.get("/api/health", (req, res) => {
+    res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
   app.get("/api/auth/user", (req, res) => {
     const user = localStorage.getUser(LOCAL_USER_ID);
     if (!user) {
