@@ -3,10 +3,20 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Handle both ESM and CJS contexts for Electron production build
+let baseDir: string;
+const isElectronPackaged = process.env.ELECTRON_PACKAGED === 'true';
 
-const dataDir = path.join(__dirname, "..", "data");
+if (isElectronPackaged && process.resourcesPath) {
+  baseDir = process.resourcesPath;
+} else if (typeof __dirname !== 'undefined' && __dirname) {
+  baseDir = path.join(__dirname, "..");
+} else {
+  const __filename_esm = fileURLToPath(import.meta.url);
+  baseDir = path.join(path.dirname(__filename_esm), "..");
+}
+
+const dataDir = path.join(baseDir, "data");
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
