@@ -70,7 +70,7 @@ app.use((req, res, next) => {
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/client/src/main.tsx"></script>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>`
         );
