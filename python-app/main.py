@@ -1,6 +1,7 @@
 """
-Betfair Dutching - Risultati Esatti
+Betfair Dutching - Tutti i Mercati
 Main application with Tkinter GUI for Windows desktop.
+Supports all market types and Streaming API for real-time prices.
 """
 
 import tkinter as tk
@@ -10,41 +11,38 @@ import json
 from datetime import datetime
 
 from database import Database
-from betfair_client import BetfairClient
+from betfair_client import BetfairClient, MARKET_TYPES
 from dutching import calculate_dutching_stakes, validate_selections, format_currency
 
-# App configuration
-APP_NAME = "Betfair Dutching - Risultati Esatti"
-APP_VERSION = "1.0.0"
-WINDOW_WIDTH = 1200
-WINDOW_HEIGHT = 800
+APP_NAME = "Betfair Dutching"
+APP_VERSION = "2.0.0"
+WINDOW_WIDTH = 1300
+WINDOW_HEIGHT = 850
+
 
 class BetfairDutchingApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
-        self.root.minsize(900, 600)
+        self.root.minsize(1000, 700)
         
-        # Set icon if available
         try:
             self.root.iconbitmap("icon.ico")
         except:
             pass
         
-        # Initialize components
         self.db = Database()
         self.client = None
         self.current_event = None
         self.current_market = None
-        self.selected_runners = {}  # {selection_id: runner_data}
+        self.available_markets = []
+        self.selected_runners = {}
+        self.streaming_active = False
         
-        # Create UI
         self._create_menu()
         self._create_main_layout()
         self._load_settings()
-        
-        # Style configuration
         self._configure_styles()
     
     def _configure_styles(self):
@@ -52,7 +50,6 @@ class BetfairDutchingApp:
         style = ttk.Style()
         style.theme_use('clam')
         
-        # Configure colors
         style.configure('TFrame', background='#f5f5f5')
         style.configure('TLabel', background='#f5f5f5', font=('Segoe UI', 10))
         style.configure('TButton', font=('Segoe UI', 10))
@@ -61,44 +58,43 @@ class BetfairDutchingApp:
         style.configure('Success.TLabel', foreground='green')
         style.configure('Error.TLabel', foreground='red')
         style.configure('Money.TLabel', font=('Segoe UI', 11, 'bold'), foreground='#1a73e8')
+        style.configure('Stream.TLabel', font=('Segoe UI', 10, 'bold'), foreground='#e65100')
     
     def _create_menu(self):
         """Create application menu."""
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
         
-        # File menu
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
         file_menu.add_command(label="Configura Credenziali", command=self._show_credentials_dialog)
         file_menu.add_separator()
-        file_menu.add_command(label="Esci", command=self.root.quit)
+        file_menu.add_command(label="Esci", command=self._on_close)
         
-        # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Aiuto", menu=help_menu)
         help_menu.add_command(label="Informazioni", command=self._show_about)
+        
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+    
+    def _on_close(self):
+        """Handle window close."""
+        if self.client:
+            self.client.logout()
+        self.root.destroy()
     
     def _create_main_layout(self):
         """Create main application layout."""
-        # Main container
         self.main_frame = ttk.Frame(self.root, padding=10)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Top bar - Connection status
         self._create_status_bar()
         
-        # Content area with panels
         content_frame = ttk.Frame(self.main_frame)
         content_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
-        # Left panel - Events list
         self._create_events_panel(content_frame)
-        
-        # Center panel - Market and runners
         self._create_market_panel(content_frame)
-        
-        # Right panel - Dutching calculator
         self._create_dutching_panel(content_frame)
     
     def _create_status_bar(self):
@@ -106,19 +102,18 @@ class BetfairDutchingApp:
         status_frame = ttk.Frame(self.main_frame)
         status_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Connection status
         self.status_label = ttk.Label(status_frame, text="Non connesso", style='Error.TLabel')
         self.status_label.pack(side=tk.LEFT)
         
-        # Balance
         self.balance_label = ttk.Label(status_frame, text="", style='Money.TLabel')
         self.balance_label.pack(side=tk.LEFT, padx=20)
         
-        # Connect/Disconnect button
+        self.stream_label = ttk.Label(status_frame, text="", style='Stream.TLabel')
+        self.stream_label.pack(side=tk.LEFT, padx=10)
+        
         self.connect_btn = ttk.Button(status_frame, text="Connetti", command=self._toggle_connection)
         self.connect_btn.pack(side=tk.RIGHT)
         
-        # Refresh button
         self.refresh_btn = ttk.Button(status_frame, text="Aggiorna", command=self._refresh_data, state=tk.DISABLED)
         self.refresh_btn.pack(side=tk.RIGHT, padx=5)
     
@@ -127,7 +122,6 @@ class BetfairDutchingApp:
         events_frame = ttk.LabelFrame(parent, text="Partite", padding=10)
         events_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
         
-        # Search
         search_frame = ttk.Frame(events_frame)
         search_frame.pack(fill=tk.X, pady=(0, 5))
         
@@ -136,57 +130,91 @@ class BetfairDutchingApp:
         search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         search_entry.pack(fill=tk.X)
         
-        # Events treeview
         columns = ('name', 'date', 'country')
         self.events_tree = ttk.Treeview(events_frame, columns=columns, show='headings', height=20)
         self.events_tree.heading('name', text='Partita')
         self.events_tree.heading('date', text='Data')
         self.events_tree.heading('country', text='Paese')
-        self.events_tree.column('name', width=200)
-        self.events_tree.column('date', width=100)
+        self.events_tree.column('name', width=180)
+        self.events_tree.column('date', width=90)
         self.events_tree.column('country', width=50)
         
-        # Scrollbar
         scrollbar = ttk.Scrollbar(events_frame, orient=tk.VERTICAL, command=self.events_tree.yview)
         self.events_tree.configure(yscrollcommand=scrollbar.set)
         
         self.events_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Bind selection
         self.events_tree.bind('<<TreeviewSelect>>', self._on_event_selected)
         
         self.all_events = []
     
     def _create_market_panel(self, parent):
-        """Create market/runners panel."""
-        market_frame = ttk.LabelFrame(parent, text="Mercato Risultato Esatto", padding=10)
+        """Create market/runners panel with market type selector."""
+        market_frame = ttk.LabelFrame(parent, text="Mercato", padding=10)
         market_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
         
-        # Event name
-        self.event_name_label = ttk.Label(market_frame, text="Seleziona una partita", style='Header.TLabel')
-        self.event_name_label.pack(anchor=tk.W, pady=(0, 10))
+        header_frame = ttk.Frame(market_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 5))
         
-        # Runners treeview
-        columns = ('select', 'name', 'back', 'lay')
-        self.runners_tree = ttk.Treeview(market_frame, columns=columns, show='headings', height=20)
+        self.event_name_label = ttk.Label(header_frame, text="Seleziona una partita", style='Header.TLabel')
+        self.event_name_label.pack(anchor=tk.W)
+        
+        selector_frame = ttk.Frame(market_frame)
+        selector_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(selector_frame, text="Tipo Mercato:").pack(side=tk.LEFT)
+        self.market_type_var = tk.StringVar()
+        self.market_combo = ttk.Combobox(
+            selector_frame, 
+            textvariable=self.market_type_var, 
+            state='readonly',
+            width=30
+        )
+        self.market_combo.pack(side=tk.LEFT, padx=5)
+        self.market_combo.bind('<<ComboboxSelected>>', self._on_market_type_selected)
+        
+        stream_frame = ttk.Frame(market_frame)
+        stream_frame.pack(fill=tk.X, pady=5)
+        
+        self.stream_var = tk.BooleanVar(value=False)
+        self.stream_check = ttk.Checkbutton(
+            stream_frame, 
+            text="Streaming Quote Live", 
+            variable=self.stream_var,
+            command=self._toggle_streaming
+        )
+        self.stream_check.pack(side=tk.LEFT)
+        
+        self.refresh_prices_btn = ttk.Button(
+            stream_frame, 
+            text="Aggiorna Quote", 
+            command=self._refresh_prices,
+            state=tk.DISABLED
+        )
+        self.refresh_prices_btn.pack(side=tk.LEFT, padx=10)
+        
+        columns = ('select', 'name', 'back', 'back_size', 'lay', 'lay_size')
+        self.runners_tree = ttk.Treeview(market_frame, columns=columns, show='headings', height=18)
         self.runners_tree.heading('select', text='')
-        self.runners_tree.heading('name', text='Risultato')
+        self.runners_tree.heading('name', text='Selezione')
         self.runners_tree.heading('back', text='Back')
+        self.runners_tree.heading('back_size', text='Disp.')
         self.runners_tree.heading('lay', text='Lay')
+        self.runners_tree.heading('lay_size', text='Disp.')
         self.runners_tree.column('select', width=30)
-        self.runners_tree.column('name', width=100)
-        self.runners_tree.column('back', width=60)
-        self.runners_tree.column('lay', width=60)
+        self.runners_tree.column('name', width=120)
+        self.runners_tree.column('back', width=55)
+        self.runners_tree.column('back_size', width=55)
+        self.runners_tree.column('lay', width=55)
+        self.runners_tree.column('lay_size', width=55)
         
-        # Scrollbar
         scrollbar = ttk.Scrollbar(market_frame, orient=tk.VERTICAL, command=self.runners_tree.yview)
         self.runners_tree.configure(yscrollcommand=scrollbar.set)
         
         self.runners_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Bind click to toggle selection
         self.runners_tree.bind('<ButtonRelease-1>', self._on_runner_clicked)
     
     def _create_dutching_panel(self, parent):
@@ -194,7 +222,6 @@ class BetfairDutchingApp:
         dutch_frame = ttk.LabelFrame(parent, text="Calcolo Dutching", padding=10)
         dutch_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
         
-        # Bet type
         type_frame = ttk.Frame(dutch_frame)
         type_frame.pack(fill=tk.X, pady=5)
         
@@ -205,7 +232,6 @@ class BetfairDutchingApp:
         ttk.Radiobutton(type_frame, text="Lay", variable=self.bet_type_var, value='LAY',
                        command=self._recalculate).pack(side=tk.LEFT)
         
-        # Total stake
         stake_frame = ttk.Frame(dutch_frame)
         stake_frame.pack(fill=tk.X, pady=5)
         
@@ -215,14 +241,12 @@ class BetfairDutchingApp:
         stake_entry = ttk.Entry(stake_frame, textvariable=self.stake_var, width=10)
         stake_entry.pack(side=tk.LEFT, padx=5)
         
-        # Selected runners
         ttk.Label(dutch_frame, text="Selezioni:", style='Header.TLabel').pack(anchor=tk.W, pady=(10, 5))
         
         self.selections_text = scrolledtext.ScrolledText(dutch_frame, height=10, width=30)
         self.selections_text.pack(fill=tk.BOTH, expand=True)
         self.selections_text.config(state=tk.DISABLED)
         
-        # Summary
         summary_frame = ttk.Frame(dutch_frame)
         summary_frame.pack(fill=tk.X, pady=10)
         
@@ -232,7 +256,6 @@ class BetfairDutchingApp:
         self.prob_label = ttk.Label(summary_frame, text="Probabilita Implicita: -")
         self.prob_label.pack(anchor=tk.W)
         
-        # Buttons
         btn_frame = ttk.Frame(dutch_frame)
         btn_frame.pack(fill=tk.X, pady=10)
         
@@ -244,7 +267,6 @@ class BetfairDutchingApp:
         """Load saved settings."""
         settings = self.db.get_settings()
         if settings and settings.get('session_token'):
-            # Try to restore session
             self._try_restore_session(settings)
     
     def _try_restore_session(self, settings):
@@ -253,7 +275,6 @@ class BetfairDutchingApp:
                    settings.get('certificate'), settings.get('private_key')]):
             return
         
-        # Check if session is still valid
         expiry = settings.get('session_expiry')
         if expiry:
             try:
@@ -276,17 +297,14 @@ class BetfairDutchingApp:
         
         settings = self.db.get_settings() or {}
         
-        # Username
         ttk.Label(frame, text="Username Betfair:").pack(anchor=tk.W)
         username_var = tk.StringVar(value=settings.get('username', ''))
         ttk.Entry(frame, textvariable=username_var, width=50).pack(fill=tk.X, pady=(0, 10))
         
-        # App Key
         ttk.Label(frame, text="App Key:").pack(anchor=tk.W)
         appkey_var = tk.StringVar(value=settings.get('app_key', ''))
         ttk.Entry(frame, textvariable=appkey_var, width=50).pack(fill=tk.X, pady=(0, 10))
         
-        # Certificate
         ttk.Label(frame, text="Certificato SSL (.pem):").pack(anchor=tk.W)
         cert_text = scrolledtext.ScrolledText(frame, height=6, width=50)
         cert_text.pack(fill=tk.X, pady=(0, 5))
@@ -302,7 +320,6 @@ class BetfairDutchingApp:
         
         ttk.Button(frame, text="Carica da file...", command=load_cert).pack(anchor=tk.W, pady=(0, 10))
         
-        # Private Key
         ttk.Label(frame, text="Chiave Privata (.pem):").pack(anchor=tk.W)
         key_text = scrolledtext.ScrolledText(frame, height=6, width=50)
         key_text.pack(fill=tk.X, pady=(0, 5))
@@ -346,7 +363,6 @@ class BetfairDutchingApp:
             messagebox.showerror("Errore", "Configura prima le credenziali dal menu File")
             return
         
-        # Ask for password
         pwd_dialog = tk.Toplevel(self.root)
         pwd_dialog.title("Password Betfair")
         pwd_dialog.geometry("300x120")
@@ -379,10 +395,8 @@ class BetfairDutchingApp:
                     )
                     result = self.client.login(password)
                     
-                    # Save session
                     self.db.save_session(result['session_token'], result['expiry'])
                     
-                    # Update UI
                     self.root.after(0, self._on_connected)
                 except Exception as e:
                     self.root.after(0, lambda: self._on_connection_error(str(e)))
@@ -398,10 +412,7 @@ class BetfairDutchingApp:
         self.connect_btn.config(text="Disconnetti", state=tk.NORMAL)
         self.refresh_btn.config(state=tk.NORMAL)
         
-        # Get balance
         self._update_balance()
-        
-        # Load events
         self._load_events()
     
     def _on_connection_error(self, error):
@@ -419,13 +430,16 @@ class BetfairDutchingApp:
         
         self.db.clear_session()
         self.status_label.config(text="Non connesso", style='Error.TLabel')
+        self.stream_label.config(text="")
         self.connect_btn.config(text="Connetti")
         self.refresh_btn.config(state=tk.DISABLED)
         self.balance_label.config(text="")
+        self.streaming_active = False
+        self.stream_var.set(False)
         
-        # Clear data
         self.events_tree.delete(*self.events_tree.get_children())
         self.runners_tree.delete(*self.runners_tree.get_children())
+        self.market_combo['values'] = []
         self._clear_selections()
     
     def _update_balance(self):
@@ -498,7 +512,7 @@ class BetfairDutchingApp:
         self._update_balance()
         self._load_events()
         if self.current_event:
-            self._load_market(self.current_event['id'])
+            self._load_available_markets(self.current_event['id'])
     
     def _on_event_selected(self, event):
         """Handle event selection."""
@@ -508,23 +522,68 @@ class BetfairDutchingApp:
         
         event_id = selection[0]
         
-        # Find event in list
         for evt in self.all_events:
             if evt['id'] == event_id:
                 self.current_event = evt
                 self.event_name_label.config(text=evt['name'])
                 break
         
+        self._stop_streaming()
         self._clear_selections()
-        self._load_market(event_id)
+        self._load_available_markets(event_id)
     
-    def _load_market(self, event_id):
-        """Load correct score market for event."""
+    def _load_available_markets(self, event_id):
+        """Load all available markets for an event."""
+        self.runners_tree.delete(*self.runners_tree.get_children())
+        self.market_combo['values'] = []
+        self.refresh_prices_btn.config(state=tk.DISABLED)
+        
+        def fetch():
+            try:
+                markets = self.client.get_available_markets(event_id)
+                self.root.after(0, lambda: self._display_available_markets(markets))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Errore", f"Errore caricamento mercati: {e}"))
+        
+        threading.Thread(target=fetch, daemon=True).start()
+    
+    def _display_available_markets(self, markets):
+        """Display available markets in dropdown."""
+        self.available_markets = markets
+        
+        if not markets:
+            self.market_combo['values'] = ["Nessun mercato disponibile"]
+            return
+        
+        display_names = []
+        for m in markets:
+            name = m.get('displayName') or m.get('marketName', 'Sconosciuto')
+            display_names.append(name)
+        
+        self.market_combo['values'] = display_names
+        
+        if display_names:
+            self.market_combo.current(0)
+            self._on_market_type_selected(None)
+    
+    def _on_market_type_selected(self, event):
+        """Handle market type selection from dropdown."""
+        selection = self.market_combo.current()
+        if selection < 0 or selection >= len(self.available_markets):
+            return
+        
+        market = self.available_markets[selection]
+        self._stop_streaming()
+        self._clear_selections()
+        self._load_market(market['marketId'])
+    
+    def _load_market(self, market_id):
+        """Load a specific market with prices."""
         self.runners_tree.delete(*self.runners_tree.get_children())
         
         def fetch():
             try:
-                market = self.client.get_correct_score_market(event_id)
+                market = self.client.get_market_with_prices(market_id)
                 self.root.after(0, lambda: self._display_market(market))
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("Errore", f"Mercato non disponibile: {e}"))
@@ -535,17 +594,104 @@ class BetfairDutchingApp:
         """Display market runners."""
         self.current_market = market
         self.runners_tree.delete(*self.runners_tree.get_children())
+        self.refresh_prices_btn.config(state=tk.NORMAL)
         
         for runner in market['runners']:
             back_price = f"{runner['backPrice']:.2f}" if runner.get('backPrice') else "-"
             lay_price = f"{runner['layPrice']:.2f}" if runner.get('layPrice') else "-"
+            back_size = f"{runner['backSize']:.0f}" if runner.get('backSize') else "-"
+            lay_size = f"{runner['laySize']:.0f}" if runner.get('laySize') else "-"
             
             self.runners_tree.insert('', tk.END, iid=str(runner['selectionId']), values=(
-                '',  # Checkbox placeholder
+                '',
                 runner['runnerName'],
                 back_price,
-                lay_price
+                back_size,
+                lay_price,
+                lay_size
             ))
+    
+    def _refresh_prices(self):
+        """Manually refresh prices for current market."""
+        if not self.current_market:
+            return
+        
+        self._load_market(self.current_market['marketId'])
+    
+    def _toggle_streaming(self):
+        """Toggle streaming on/off."""
+        if self.stream_var.get():
+            self._start_streaming()
+        else:
+            self._stop_streaming()
+    
+    def _start_streaming(self):
+        """Start streaming prices for current market."""
+        if not self.client or not self.current_market:
+            self.stream_var.set(False)
+            return
+        
+        try:
+            self.client.start_streaming(
+                [self.current_market['marketId']],
+                self._on_price_update
+            )
+            self.streaming_active = True
+            self.stream_label.config(text="STREAMING ATTIVO")
+        except Exception as e:
+            self.stream_var.set(False)
+            messagebox.showerror("Errore Streaming", str(e))
+    
+    def _stop_streaming(self):
+        """Stop streaming."""
+        if self.client:
+            self.client.stop_streaming()
+        self.streaming_active = False
+        self.stream_var.set(False)
+        self.stream_label.config(text="")
+    
+    def _on_price_update(self, market_id, runners_data):
+        """Handle streaming price update."""
+        if not self.current_market or market_id != self.current_market['marketId']:
+            return
+        
+        def update_ui():
+            for runner_update in runners_data:
+                selection_id = str(runner_update['selectionId'])
+                
+                try:
+                    item = self.runners_tree.item(selection_id)
+                    if not item:
+                        continue
+                    
+                    current_values = list(item['values'])
+                    
+                    back_prices = runner_update.get('backPrices', [])
+                    lay_prices = runner_update.get('layPrices', [])
+                    
+                    if back_prices:
+                        best_back = back_prices[0]
+                        current_values[2] = f"{best_back[0]:.2f}"
+                        current_values[3] = f"{best_back[1]:.0f}" if len(best_back) > 1 else "-"
+                    
+                    if lay_prices:
+                        best_lay = lay_prices[0]
+                        current_values[4] = f"{best_lay[0]:.2f}"
+                        current_values[5] = f"{best_lay[1]:.0f}" if len(best_lay) > 1 else "-"
+                    
+                    self.runners_tree.item(selection_id, values=current_values)
+                    
+                    if selection_id in self.selected_runners:
+                        if back_prices:
+                            self.selected_runners[selection_id]['backPrice'] = back_prices[0][0]
+                        if lay_prices:
+                            self.selected_runners[selection_id]['layPrice'] = lay_prices[0][0]
+                        self._recalculate()
+                        
+                except Exception:
+                    pass
+        
+        self.root.after(0, update_ui)
     
     def _on_runner_clicked(self, event):
         """Handle runner row click to toggle selection."""
@@ -553,30 +699,22 @@ class BetfairDutchingApp:
         if not item:
             return
         
-        selection_id = int(item)
+        selection_id = item
         
         if selection_id in self.selected_runners:
-            # Deselect
             del self.selected_runners[selection_id]
-            self.runners_tree.item(item, values=('', *self.runners_tree.item(item)['values'][1:]))
+            values = list(self.runners_tree.item(item)['values'])
+            values[0] = ''
+            self.runners_tree.item(item, values=values)
         else:
-            # Select
-            for runner in self.current_market['runners']:
-                if runner['selectionId'] == selection_id:
-                    bet_type = self.bet_type_var.get()
-                    price = runner['backPrice'] if bet_type == 'BACK' else runner['layPrice']
-                    
-                    if not price:
-                        messagebox.showwarning("Attenzione", f"Quota {bet_type} non disponibile")
-                        return
-                    
-                    self.selected_runners[selection_id] = {
-                        'selectionId': selection_id,
-                        'runnerName': runner['runnerName'],
-                        'price': price
-                    }
-                    self.runners_tree.item(item, values=('X', *self.runners_tree.item(item)['values'][1:]))
-                    break
+            if self.current_market:
+                for runner in self.current_market['runners']:
+                    if str(runner['selectionId']) == selection_id:
+                        self.selected_runners[selection_id] = runner.copy()
+                        values = list(self.runners_tree.item(item)['values'])
+                        values[0] = 'X'
+                        self.runners_tree.item(item, values=values)
+                        break
         
         self._recalculate()
     
@@ -584,24 +722,34 @@ class BetfairDutchingApp:
         """Clear all selections."""
         self.selected_runners = {}
         
-        # Update treeview
         for item in self.runners_tree.get_children():
-            values = self.runners_tree.item(item)['values']
-            self.runners_tree.item(item, values=('', *values[1:]))
+            values = list(self.runners_tree.item(item)['values'])
+            values[0] = ''
+            self.runners_tree.item(item, values=values)
         
-        self._recalculate()
+        self.selections_text.config(state=tk.NORMAL)
+        self.selections_text.delete('1.0', tk.END)
+        self.selections_text.config(state=tk.DISABLED)
+        
+        self.profit_label.config(text="Profitto: -")
+        self.prob_label.config(text="Probabilita Implicita: -")
+        self.place_btn.config(state=tk.DISABLED)
+        self.calculated_results = None
     
     def _recalculate(self):
         """Recalculate dutching stakes."""
-        self.selections_text.config(state=tk.NORMAL)
-        self.selections_text.delete('1.0', tk.END)
-        
         if not self.selected_runners:
+            self.selections_text.config(state=tk.NORMAL)
+            self.selections_text.delete('1.0', tk.END)
+            self.selections_text.insert('1.0', "Seleziona almeno 2 risultati")
+            self.selections_text.config(state=tk.DISABLED)
             self.profit_label.config(text="Profitto: -")
             self.prob_label.config(text="Probabilita Implicita: -")
             self.place_btn.config(state=tk.DISABLED)
-            self.selections_text.config(state=tk.DISABLED)
             return
+        
+        self.selections_text.config(state=tk.NORMAL)
+        self.selections_text.delete('1.0', tk.END)
         
         try:
             total_stake = float(self.stake_var.get().replace(',', '.'))
@@ -616,7 +764,6 @@ class BetfairDutchingApp:
                 selections, total_stake, bet_type
             )
             
-            # Display results
             text_lines = []
             for r in results:
                 text_lines.append(f"{r['runnerName']}")
@@ -627,11 +774,9 @@ class BetfairDutchingApp:
             
             self.selections_text.insert('1.0', '\n'.join(text_lines))
             
-            # Update summary
             self.profit_label.config(text=f"Profitto Atteso: {format_currency(profit)}")
             self.prob_label.config(text=f"Probabilita Implicita: {implied_prob:.1f}%")
             
-            # Enable place button if valid
             errors = validate_selections(results, bet_type)
             if not errors:
                 self.place_btn.config(state=tk.NORMAL)
@@ -639,7 +784,6 @@ class BetfairDutchingApp:
                 self.place_btn.config(state=tk.DISABLED)
                 self.selections_text.insert(tk.END, "\nErrori:\n" + "\n".join(errors))
             
-            # Store calculated stakes for placement
             self.calculated_results = results
             
         except Exception as e:
@@ -657,7 +801,6 @@ class BetfairDutchingApp:
         if not self.current_market:
             return
         
-        # Confirm
         total_stake = sum(r['stake'] for r in self.calculated_results)
         msg = f"Confermi il piazzamento di {len(self.calculated_results)} scommesse?\n\n"
         msg += f"Stake Totale: {format_currency(total_stake)}"
@@ -667,7 +810,6 @@ class BetfairDutchingApp:
         
         bet_type = self.bet_type_var.get()
         
-        # Build instructions
         instructions = []
         for r in self.calculated_results:
             instructions.append({
@@ -683,7 +825,6 @@ class BetfairDutchingApp:
             try:
                 result = self.client.place_bets(self.current_market['marketId'], instructions)
                 
-                # Save to database
                 self.db.save_bet(
                     self.current_event['name'],
                     self.current_market['marketId'],
@@ -720,12 +861,19 @@ class BetfairDutchingApp:
     
     def _show_about(self):
         """Show about dialog."""
+        market_list = "\n".join([f"- {v}" for k, v in list(MARKET_TYPES.items())[:8]])
         messagebox.showinfo(
             "Informazioni",
             f"{APP_NAME}\n"
             f"Versione {APP_VERSION}\n\n"
-            "Applicazione per dutching su Betfair Exchange Italia.\n"
-            "Mercato: Risultati Esatti (Correct Score)\n\n"
+            "Applicazione per dutching su Betfair Exchange Italia.\n\n"
+            "Mercati supportati:\n"
+            f"{market_list}\n"
+            "...e altri\n\n"
+            "Funzionalita:\n"
+            "- Streaming quote in tempo reale\n"
+            "- Calcolo automatico stake dutching\n"
+            "- Validazione regole italiane\n\n"
             "Requisiti:\n"
             "- Account Betfair Italia\n"
             "- Certificato SSL per API\n"
@@ -737,6 +885,10 @@ class BetfairDutchingApp:
         self.root.mainloop()
 
 
-if __name__ == "__main__":
+def main():
     app = BetfairDutchingApp()
     app.run()
+
+
+if __name__ == "__main__":
+    main()

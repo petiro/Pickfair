@@ -1,21 +1,79 @@
 """
 Betfair API client using betfairlightweight library.
 Handles SSL certificate authentication for Betfair Italy.
+Includes Streaming API for real-time price updates.
 """
 
 import os
 import tempfile
+import threading
+import queue
 import betfairlightweight
 from betfairlightweight import filters
+from betfairlightweight.streaming import StreamListener
 from datetime import datetime, timedelta
 
-# Betfair Italy endpoints
-ITALY_LOGIN_URL = "https://identitysso-cert.betfair.it/api/certlogin"
-ITALY_EXCHANGE_URL = "https://api.betfair.it/exchange"
-
-# Sport IDs
 FOOTBALL_ID = "1"
-CORRECT_SCORE_MARKET = "CORRECT_SCORE"
+
+MARKET_TYPES = {
+    'MATCH_ODDS': 'Esito Finale (1X2)',
+    'CORRECT_SCORE': 'Risultato Esatto',
+    'OVER_UNDER_25': 'Over/Under 2.5 Goal',
+    'OVER_UNDER_15': 'Over/Under 1.5 Goal',
+    'OVER_UNDER_35': 'Over/Under 3.5 Goal',
+    'BOTH_TEAMS_TO_SCORE': 'Goal/No Goal',
+    'DOUBLE_CHANCE': 'Doppia Chance',
+    'DRAW_NO_BET': 'Draw No Bet',
+    'HALF_TIME': 'Primo Tempo',
+    'HALF_TIME_SCORE': 'Risultato Primo Tempo',
+    'HALF_TIME_FULL_TIME': 'Primo Tempo/Finale',
+    'ASIAN_HANDICAP': 'Handicap Asiatico',
+    'FIRST_GOAL_SCORER': 'Primo Marcatore',
+    'ANYTIME_SCORER': 'Marcatore',
+    'TOTAL_GOALS': 'Totale Goal',
+    'ODD_OR_EVEN': 'Pari/Dispari Goal',
+    'WINNING_MARGIN': 'Margine Vittoria',
+    'NEXT_GOAL': 'Prossimo Goal',
+    'TEAM_TOTAL_GOALS': 'Goal Squadra',
+}
+
+ALL_MARKET_TYPE_CODES = list(MARKET_TYPES.keys())
+
+
+class PriceStreamListener(StreamListener):
+    """Custom listener for processing streaming price updates."""
+    
+    def __init__(self, price_callback):
+        super().__init__()
+        self.price_callback = price_callback
+        self.market_cache = {}
+    
+    def on_data(self, raw_data):
+        """Called when new data arrives from stream."""
+        try:
+            if hasattr(raw_data, 'data'):
+                data = raw_data.data
+            else:
+                data = raw_data
+                
+            if isinstance(data, dict) and 'mc' in data:
+                for market_change in data['mc']:
+                    market_id = market_change.get('id')
+                    if market_id and 'rc' in market_change:
+                        runners_data = []
+                        for rc in market_change['rc']:
+                            runner_info = {
+                                'selectionId': rc.get('id'),
+                                'backPrices': rc.get('atb', []),
+                                'layPrices': rc.get('atl', [])
+                            }
+                            runners_data.append(runner_info)
+                        
+                        if self.price_callback:
+                            self.price_callback(market_id, runners_data)
+        except Exception as e:
+            print(f"Stream data error: {e}")
+
 
 class BetfairClient:
     def __init__(self, username, app_key, cert_pem, key_pem):
@@ -26,6 +84,10 @@ class BetfairClient:
         self.client = None
         self.temp_cert_file = None
         self.temp_key_file = None
+        self.stream = None
+        self.stream_thread = None
+        self.streaming_active = False
+        self.price_callbacks = {}
     
     def _create_temp_cert_files(self):
         """Create temporary certificate files for betfairlightweight."""
@@ -56,26 +118,19 @@ class BetfairClient:
     def login(self, password):
         """
         Login to Betfair Italy using SSL certificate authentication.
-        Returns session token on success.
-        
-        Uses locale="italy" which configures betfairlightweight to:
-        - Login via https://identitysso.betfair.it/api/certlogin
-        - After login, API calls use standard endpoints with Italian session
+        Uses locale="italy" for Italian Exchange endpoints.
         """
         cert_path, key_path = self._create_temp_cert_files()
         
         try:
-            # Create client with Italy locale for .it endpoints
             self.client = betfairlightweight.APIClient(
                 username=self.username,
                 password=password,
                 app_key=self.app_key,
                 certs=(cert_path, key_path),
-                locale="italy"  # Use "italy" not "it" for Italian Exchange
+                locale="italy"
             )
             
-            # Login using SSL certificate authentication
-            # This calls identitysso.betfair.it for Italian accounts
             self.client.login()
             
             return {
@@ -87,7 +142,8 @@ class BetfairClient:
             raise Exception(f"Login fallito: {str(e)}")
     
     def logout(self):
-        """Logout from Betfair."""
+        """Logout from Betfair and stop streaming."""
+        self.stop_streaming()
         if self.client:
             try:
                 self.client.logout()
@@ -113,7 +169,6 @@ class BetfairClient:
         if not self.client:
             raise Exception("Non connesso a Betfair")
         
-        # Get events for today and tomorrow
         time_filter = filters.time_range(
             from_=datetime.now(),
             to=datetime.now() + timedelta(days=2)
@@ -136,32 +191,56 @@ class BetfairClient:
                 'marketCount': event.market_count
             })
         
-        # Sort by date
         result.sort(key=lambda x: x['openDate'] or '')
         return result
     
-    def get_correct_score_market(self, event_id):
-        """Get correct score market for an event with prices."""
+    def get_available_markets(self, event_id):
+        """Get all available markets for an event."""
         if not self.client:
             raise Exception("Non connesso a Betfair")
         
-        # Find correct score market
         markets = self.client.betting.list_market_catalogue(
             filter=filters.market_filter(
                 event_ids=[event_id],
-                market_type_codes=[CORRECT_SCORE_MARKET]
+                market_type_codes=ALL_MARKET_TYPE_CODES
+            ),
+            market_projection=['MARKET_START_TIME'],
+            max_results=50
+        )
+        
+        result = []
+        for market in markets:
+            market_type = market.market_type if hasattr(market, 'market_type') else None
+            display_name = MARKET_TYPES.get(market_type, market.market_name)
+            
+            result.append({
+                'marketId': market.market_id,
+                'marketName': market.market_name,
+                'marketType': market_type,
+                'displayName': display_name,
+                'startTime': market.market_start_time.isoformat() if market.market_start_time else None
+            })
+        
+        return result
+    
+    def get_market_with_prices(self, market_id):
+        """Get a specific market with runner details and prices."""
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        markets = self.client.betting.list_market_catalogue(
+            filter=filters.market_filter(
+                market_ids=[market_id]
             ),
             market_projection=['RUNNER_DESCRIPTION', 'MARKET_START_TIME'],
             max_results=1
         )
         
         if not markets:
-            raise Exception("Mercato Risultato Esatto non trovato")
+            raise Exception("Mercato non trovato")
         
         market = markets[0]
-        market_id = market.market_id
         
-        # Get prices
         price_data = self.client.betting.list_market_book(
             market_ids=[market_id],
             price_projection=filters.price_projection(
@@ -172,7 +251,6 @@ class BetfairClient:
         if not price_data:
             raise Exception("Quote non disponibili")
         
-        # Build runners with prices
         runners = []
         price_book = price_data[0]
         
@@ -185,12 +263,16 @@ class BetfairClient:
             
             back_price = None
             lay_price = None
+            back_size = None
+            lay_size = None
             
             if runner_prices and runner_prices.ex:
                 if runner_prices.ex.available_to_back:
                     back_price = runner_prices.ex.available_to_back[0].price
+                    back_size = runner_prices.ex.available_to_back[0].size
                 if runner_prices.ex.available_to_lay:
                     lay_price = runner_prices.ex.available_to_lay[0].price
+                    lay_size = runner_prices.ex.available_to_lay[0].size
             
             runners.append({
                 'selectionId': runner.selection_id,
@@ -198,6 +280,8 @@ class BetfairClient:
                 'sortPriority': runner.sort_priority,
                 'backPrice': back_price,
                 'layPrice': lay_price,
+                'backSize': back_size,
+                'laySize': lay_size,
                 'status': runner_prices.status if runner_prices else 'ACTIVE'
             })
         
@@ -207,6 +291,94 @@ class BetfairClient:
             'startTime': market.market_start_time.isoformat() if market.market_start_time else None,
             'runners': runners
         }
+    
+    def get_correct_score_market(self, event_id):
+        """Get correct score market for an event (legacy method)."""
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        markets = self.client.betting.list_market_catalogue(
+            filter=filters.market_filter(
+                event_ids=[event_id],
+                market_type_codes=['CORRECT_SCORE']
+            ),
+            market_projection=['RUNNER_DESCRIPTION', 'MARKET_START_TIME'],
+            max_results=1
+        )
+        
+        if not markets:
+            raise Exception("Mercato Risultato Esatto non trovato")
+        
+        return self.get_market_with_prices(markets[0].market_id)
+    
+    def start_streaming(self, market_ids, price_callback):
+        """
+        Start streaming price updates for specified markets.
+        
+        Args:
+            market_ids: List of market IDs to stream
+            price_callback: Function(market_id, runners_data) called on price updates
+        """
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        self.stop_streaming()
+        
+        try:
+            self.stream = self.client.streaming.create_stream(
+                listener=PriceStreamListener(price_callback)
+            )
+            
+            market_filter = filters.streaming_market_filter(
+                market_ids=market_ids
+            )
+            
+            market_data_filter = filters.streaming_market_data_filter(
+                fields=['EX_BEST_OFFERS', 'EX_TRADED']
+            )
+            
+            self.stream.subscribe_to_markets(
+                market_filter=market_filter,
+                market_data_filter=market_data_filter
+            )
+            
+            self.streaming_active = True
+            self.stream_thread = threading.Thread(
+                target=self._run_stream,
+                daemon=True
+            )
+            self.stream_thread.start()
+            
+            return True
+            
+        except Exception as e:
+            self.streaming_active = False
+            raise Exception(f"Errore avvio streaming: {str(e)}")
+    
+    def _run_stream(self):
+        """Run the stream in a background thread."""
+        try:
+            if self.stream:
+                self.stream.start()
+        except Exception as e:
+            print(f"Stream error: {e}")
+        finally:
+            self.streaming_active = False
+    
+    def stop_streaming(self):
+        """Stop the active stream."""
+        self.streaming_active = False
+        if self.stream:
+            try:
+                self.stream.stop()
+            except:
+                pass
+            self.stream = None
+        self.stream_thread = None
+    
+    def is_streaming(self):
+        """Check if streaming is active."""
+        return self.streaming_active and self.stream is not None
     
     def place_bets(self, market_id, instructions):
         """
@@ -222,12 +394,10 @@ class BetfairClient:
         if not self.client:
             raise Exception("Non connesso a Betfair")
         
-        # Validate Italian regulations
         for inst in instructions:
             if inst['side'] == 'BACK' and inst['size'] < 2.0:
                 raise Exception(f"Puntata minima BACK: 2.00 EUR (richiesto: {inst['size']:.2f})")
         
-        # Build limit orders
         limit_orders = []
         for inst in instructions:
             limit_orders.append(
