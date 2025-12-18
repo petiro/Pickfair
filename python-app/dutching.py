@@ -129,32 +129,41 @@ def _calculate_lay_dutching(
     - profit if runner loses = €1
     - loss if runner wins = €1 × (1.5 - 1) = €0.50
     
-    We treat total_stake as total LIABILITY and distribute proportionally
-    by implied probability (1/price), then calculate stakes from liabilities.
-    This achieves balanced net outcomes across all selections.
+    User enters total_stake as budget for lay stakes.
+    We distribute proportionally by 1/(price-1) to equalize outcomes.
+    Net profit = sum(other stakes) - liability for any winner.
     """
     results = []
-    total_liability = total_stake  # User input = total liability budget
     
-    # Calculate implied probabilities for proportional distribution
-    implied_probs = []
+    # Calculate lay exposure weights: 1/(price-1) for equalized outcomes
+    exposure_weights = []
     for sel in selections:
-        prob = 1.0 / sel['price']
-        implied_probs.append(prob)
+        weight = 1.0 / (sel['price'] - 1) if sel['price'] > 1 else 0
+        exposure_weights.append(weight)
     
-    total_implied = sum(implied_probs)
+    total_weight = sum(exposure_weights)
     
-    # Distribute liability proportionally by implied probability
-    raw_liabilities = []
+    # Distribute stakes proportionally by exposure weight
+    raw_stakes = []
     for i, sel in enumerate(selections):
-        liability = total_liability * implied_probs[i] / total_implied
-        raw_liabilities.append(liability)
+        stake = total_stake * exposure_weights[i] / total_weight if total_weight > 0 else 0
+        raw_stakes.append(stake)
     
-    # Calculate stakes from liabilities: stake = liability / (price - 1)
+    # Round stakes and distribute rounding error
+    rounded_stakes = [round(s, 2) for s in raw_stakes]
+    stake_diff = round(total_stake - sum(rounded_stakes), 2)
+    
+    # Distribute rounding error across selections proportionally
+    if stake_diff != 0 and len(rounded_stakes) > 0:
+        # Add to largest stake first for least impact
+        max_idx = rounded_stakes.index(max(rounded_stakes))
+        rounded_stakes[max_idx] = round(rounded_stakes[max_idx] + stake_diff, 2)
+    
+    # Build results
     for i, sel in enumerate(selections):
         price = sel['price']
-        liability = round(raw_liabilities[i], 2)
-        stake = round(liability / (price - 1), 2) if price > 1 else 0
+        stake = rounded_stakes[i]
+        liability = round(stake * (price - 1), 2)
         
         results.append({
             'selectionId': sel['selectionId'],
@@ -191,7 +200,7 @@ def _calculate_lay_dutching(
     if best_case_profit > MAX_WINNINGS:
         raise ValueError(f"Vincita massima superata: {best_case_profit:.2f} EUR (max: {MAX_WINNINGS:.2f})")
     
-    implied_prob = total_implied * 100
+    implied_prob = sum(1 / s['price'] for s in selections) * 100
     
     return results, round(best_case_profit, 2), round(implied_prob, 2)
 
