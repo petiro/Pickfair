@@ -46,7 +46,7 @@ class BetfairDutchingApp:
         self._configure_styles()
     
     def _configure_styles(self):
-        """Configure ttk styles."""
+        """Configure ttk styles with FairBot-like colors."""
         style = ttk.Style()
         style.theme_use('clam')
         
@@ -59,6 +59,10 @@ class BetfairDutchingApp:
         style.configure('Error.TLabel', foreground='red')
         style.configure('Money.TLabel', font=('Segoe UI', 11, 'bold'), foreground='#1a73e8')
         style.configure('Stream.TLabel', font=('Segoe UI', 10, 'bold'), foreground='#e65100')
+        
+        # FairBot-style treeview with colored headers
+        style.configure('Treeview', font=('Segoe UI', 9), rowheight=22)
+        style.configure('Treeview.Heading', font=('Segoe UI', 9, 'bold'))
     
     def _create_menu(self):
         """Create application menu."""
@@ -118,7 +122,7 @@ class BetfairDutchingApp:
         self.refresh_btn.pack(side=tk.RIGHT, padx=5)
     
     def _create_events_panel(self, parent):
-        """Create events list panel."""
+        """Create events list panel with country grouping."""
         events_frame = ttk.LabelFrame(parent, text="Partite", padding=10)
         events_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
         
@@ -130,14 +134,15 @@ class BetfairDutchingApp:
         search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         search_entry.pack(fill=tk.X)
         
-        columns = ('name', 'date', 'country')
-        self.events_tree = ttk.Treeview(events_frame, columns=columns, show='headings', height=20)
+        # Hierarchical tree: Country -> Matches
+        columns = ('name', 'date')
+        self.events_tree = ttk.Treeview(events_frame, columns=columns, show='tree headings', height=20)
+        self.events_tree.heading('#0', text='Nazione')
         self.events_tree.heading('name', text='Partita')
         self.events_tree.heading('date', text='Data')
-        self.events_tree.heading('country', text='Paese')
+        self.events_tree.column('#0', width=100)
         self.events_tree.column('name', width=180)
-        self.events_tree.column('date', width=90)
-        self.events_tree.column('country', width=50)
+        self.events_tree.column('date', width=80)
         
         scrollbar = ttk.Scrollbar(events_frame, orient=tk.VERTICAL, command=self.events_tree.yview)
         self.events_tree.configure(yscrollcommand=scrollbar.set)
@@ -148,6 +153,7 @@ class BetfairDutchingApp:
         self.events_tree.bind('<<TreeviewSelect>>', self._on_event_selected)
         
         self.all_events = []
+        self.auto_refresh_id = None
     
     def _create_market_panel(self, parent):
         """Create market/runners panel with market type selector."""
@@ -204,10 +210,13 @@ class BetfairDutchingApp:
         self.runners_tree.heading('lay_size', text='Disp.')
         self.runners_tree.column('select', width=30)
         self.runners_tree.column('name', width=120)
-        self.runners_tree.column('back', width=55)
-        self.runners_tree.column('back_size', width=55)
-        self.runners_tree.column('lay', width=55)
-        self.runners_tree.column('lay_size', width=55)
+        self.runners_tree.column('back', width=60)
+        self.runners_tree.column('back_size', width=60)
+        self.runners_tree.column('lay', width=60)
+        self.runners_tree.column('lay_size', width=60)
+        
+        # Configure row tags for FairBot-style coloring
+        self.runners_tree.tag_configure('runner_row', background='#e6f3ff')
         
         scrollbar = ttk.Scrollbar(market_frame, orient=tk.VERTICAL, command=self.runners_tree.yview)
         self.runners_tree.configure(yscrollcommand=scrollbar.set)
@@ -441,6 +450,7 @@ class BetfairDutchingApp:
         
         self._update_balance()
         self._load_events()
+        self._start_auto_refresh()
     
     def _on_connection_error(self, error):
         """Handle connection error."""
@@ -449,8 +459,27 @@ class BetfairDutchingApp:
         self.client = None
         messagebox.showerror("Errore Connessione", error)
     
+    def _start_auto_refresh(self):
+        """Start auto-refresh every 30 seconds."""
+        self._stop_auto_refresh()  # Cancel any existing
+        
+        def refresh():
+            if self.client:
+                self._load_events()
+                self.auto_refresh_id = self.root.after(30000, refresh)
+        
+        self.auto_refresh_id = self.root.after(30000, refresh)
+    
+    def _stop_auto_refresh(self):
+        """Stop auto-refresh timer."""
+        if hasattr(self, 'auto_refresh_id') and self.auto_refresh_id:
+            self.root.after_cancel(self.auto_refresh_id)
+            self.auto_refresh_id = None
+    
     def _disconnect(self):
         """Disconnect from Betfair."""
+        self._stop_auto_refresh()
+        
         if self.client:
             self.client.logout()
             self.client = None
@@ -494,45 +523,57 @@ class BetfairDutchingApp:
         threading.Thread(target=fetch, daemon=True).start()
     
     def _display_events(self, events):
-        """Display events in treeview."""
+        """Display events in treeview grouped by country."""
         self.all_events = events
+        self._populate_events_tree()
+    
+    def _populate_events_tree(self):
+        """Populate events tree based on current search filter."""
         self.events_tree.delete(*self.events_tree.get_children())
+        search = self.search_var.get().lower()
         
-        for event in events:
-            date_str = ""
-            if event.get('openDate'):
-                try:
-                    dt = datetime.fromisoformat(event['openDate'].replace('Z', '+00:00'))
-                    date_str = dt.strftime('%d/%m %H:%M')
-                except:
-                    date_str = event['openDate'][:16]
+        if search:
+            # Search mode - show flat list of matching events
+            for event in self.all_events:
+                if search in event['name'].lower():
+                    date_str = self._format_event_date(event)
+                    self.events_tree.insert('', tk.END, iid=event['id'], text=event.get('countryCode', ''), values=(
+                        event['name'],
+                        date_str
+                    ))
+        else:
+            # No search - show grouped by country
+            countries = {}
+            for event in self.all_events:
+                country = event.get('countryCode', 'XX') or 'XX'
+                if country not in countries:
+                    countries[country] = []
+                countries[country].append(event)
             
-            self.events_tree.insert('', tk.END, iid=event['id'], values=(
-                event['name'],
-                date_str,
-                event.get('countryCode', '')
-            ))
+            for country in sorted(countries.keys()):
+                country_id = f"country_{country}"
+                self.events_tree.insert('', tk.END, iid=country_id, text=country, open=False)
+                
+                for event in countries[country]:
+                    date_str = self._format_event_date(event)
+                    self.events_tree.insert(country_id, tk.END, iid=event['id'], values=(
+                        event['name'],
+                        date_str
+                    ))
+    
+    def _format_event_date(self, event):
+        """Format event date for display."""
+        if event.get('openDate'):
+            try:
+                dt = datetime.fromisoformat(event['openDate'].replace('Z', '+00:00'))
+                return dt.strftime('%d/%m %H:%M')
+            except:
+                return event['openDate'][:16]
+        return ""
     
     def _filter_events(self, *args):
         """Filter events by search text."""
-        search = self.search_var.get().lower()
-        self.events_tree.delete(*self.events_tree.get_children())
-        
-        for event in self.all_events:
-            if search in event['name'].lower():
-                date_str = ""
-                if event.get('openDate'):
-                    try:
-                        dt = datetime.fromisoformat(event['openDate'].replace('Z', '+00:00'))
-                        date_str = dt.strftime('%d/%m %H:%M')
-                    except:
-                        pass
-                
-                self.events_tree.insert('', tk.END, iid=event['id'], values=(
-                    event['name'],
-                    date_str,
-                    event.get('countryCode', '')
-                ))
+        self._populate_events_tree()
     
     def _refresh_data(self):
         """Refresh all data."""
@@ -549,11 +590,17 @@ class BetfairDutchingApp:
         
         event_id = selection[0]
         
+        # Ignore country parent nodes (they start with "country_")
+        if event_id.startswith('country_'):
+            return
+        
         for evt in self.all_events:
             if evt['id'] == event_id:
                 self.current_event = evt
                 self.event_name_label.config(text=evt['name'])
                 break
+        else:
+            return  # Event not found
         
         self._stop_streaming()
         self._clear_selections()
@@ -636,7 +683,7 @@ class BetfairDutchingApp:
                 back_size,
                 lay_price,
                 lay_size
-            ))
+            ), tags=('runner_row',))
     
     def _refresh_prices(self):
         """Manually refresh prices for current market."""
