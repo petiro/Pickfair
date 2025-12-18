@@ -227,10 +227,20 @@ class BetfairDutchingApp:
         
         ttk.Label(type_frame, text="Tipo:").pack(side=tk.LEFT)
         self.bet_type_var = tk.StringVar(value='BACK')
-        ttk.Radiobutton(type_frame, text="Back", variable=self.bet_type_var, value='BACK', 
-                       command=self._recalculate).pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(type_frame, text="Lay", variable=self.bet_type_var, value='LAY',
-                       command=self._recalculate).pack(side=tk.LEFT)
+        
+        # Blue button for BACK
+        self.back_btn = tk.Button(type_frame, text="Back", bg='#3498db', fg='white',
+                                  activebackground='#2980b9', activeforeground='white',
+                                  relief='raised', bd=2, padx=10,
+                                  command=lambda: self._set_bet_type('BACK'))
+        self.back_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Pink button for LAY
+        self.lay_btn = tk.Button(type_frame, text="Lay", bg='#f8f8f8', fg='#333',
+                                 activebackground='#ffb6c1', activeforeground='black',
+                                 relief='raised', bd=2, padx=10,
+                                 command=lambda: self._set_bet_type('LAY'))
+        self.lay_btn.pack(side=tk.LEFT)
         
         stake_frame = ttk.Frame(dutch_frame)
         stake_frame.pack(fill=tk.X, pady=5)
@@ -758,6 +768,21 @@ class BetfairDutchingApp:
         
         self._recalculate()
     
+    def _set_bet_type(self, bet_type):
+        """Set the bet type and update button colors."""
+        self.bet_type_var.set(bet_type)
+        
+        if bet_type == 'BACK':
+            # BACK selected - blue active, gray inactive
+            self.back_btn.config(bg='#3498db', fg='white', relief='sunken')
+            self.lay_btn.config(bg='#f8f8f8', fg='#333', relief='raised')
+        else:
+            # LAY selected - pink active, gray inactive
+            self.back_btn.config(bg='#f8f8f8', fg='#333', relief='raised')
+            self.lay_btn.config(bg='#ff69b4', fg='white', relief='sunken')
+        
+        self._recalculate()
+    
     def _clear_selections(self):
         """Clear all selections."""
         self.selected_runners = {}
@@ -781,7 +806,6 @@ class BetfairDutchingApp:
         if not self.selected_runners:
             self.selections_text.config(state=tk.NORMAL)
             self.selections_text.delete('1.0', tk.END)
-            self.selections_text.insert('1.0', "Seleziona almeno 2 risultati")
             self.selections_text.config(state=tk.DISABLED)
             self.profit_label.config(text="Profitto: -")
             self.prob_label.config(text="Probabilita Implicita: -")
@@ -817,12 +841,22 @@ class BetfairDutchingApp:
                 text_lines.append(f"{r['runnerName']}")
                 text_lines.append(f"  Quota: {r['price']:.2f}")
                 text_lines.append(f"  Stake: {format_currency(r['stake'])}")
-                text_lines.append(f"  Profitto se vince: {format_currency(r['profitIfWins'])}")
+                if bet_type == 'LAY':
+                    text_lines.append(f"  Liability: {format_currency(r.get('liability', 0))}")
+                    text_lines.append(f"  Se vince: {format_currency(r['profitIfWins'])}")
+                else:
+                    text_lines.append(f"  Profitto se vince: {format_currency(r['profitIfWins'])}")
                 text_lines.append("")
             
             self.selections_text.insert('1.0', '\n'.join(text_lines))
             
-            self.profit_label.config(text=f"Profitto Atteso: {format_currency(profit)}")
+            if bet_type == 'LAY' and results:
+                # Show both best and worst case for LAY
+                best = results[0].get('bestCase', profit)
+                worst = results[0].get('worstCase', 0)
+                self.profit_label.config(text=f"Profitto Max: {format_currency(best)} | Rischio: {format_currency(worst)}")
+            else:
+                self.profit_label.config(text=f"Profitto Atteso: {format_currency(profit)}")
             self.prob_label.config(text=f"Probabilita Implicita: {implied_prob:.1f}%")
             
             errors = validate_selections(results, bet_type)

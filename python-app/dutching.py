@@ -117,41 +117,66 @@ def _calculate_lay_dutching(
     total_stake: float
 ) -> Tuple[List[Dict], float, float]:
     """
-    Calculate LAY dutching: Lay multiple outcomes for equal liability.
+    Calculate LAY dutching: Lay multiple outcomes to distribute risk.
     
     Liability = stake * (price - 1)
+    Distribute total liability proportionally to (price - 1)
     """
     results = []
-    total_liability = total_stake  # In lay, total_stake is total liability
+    total_liability = total_stake  # In lay, total_stake is total liability to distribute
     
-    # Calculate liability distribution
-    liabilities = []
+    # Calculate liability factors for proportional distribution
+    liability_factors = []
     for sel in selections:
-        # Lay odds - higher odds = more liability per unit
-        liability_factor = sel['price'] - 1
-        liabilities.append(liability_factor)
+        factor = sel['price'] - 1
+        liability_factors.append(factor)
     
-    total_liability_factor = sum(liabilities)
+    total_liability_factor = sum(liability_factors)
     
+    # First pass: calculate stakes and liabilities
     for i, sel in enumerate(selections):
         liability_factor = sel['price'] - 1
         
-        # Stake is calculated from liability
-        liability = total_liability * liabilities[i] / total_liability_factor
+        # Distribute liability proportionally
+        liability = total_liability * liability_factors[i] / total_liability_factor
         stake = liability / liability_factor if liability_factor > 0 else 0
         stake = round(stake, 2)
+        liability = round(liability, 2)
         
         results.append({
             'selectionId': sel['selectionId'],
             'runnerName': sel['runnerName'],
             'price': sel['price'],
             'stake': stake,
-            'liability': round(liability, 2),
-            'potentialProfit': stake  # If selection loses, we win the stake
+            'liability': liability,
+            'potentialProfit': stake  # If this selection loses, we keep the stake
         })
     
-    # Total potential profit when all selections lose
-    total_profit = sum(r['potentialProfit'] for r in results) - total_liability
+    # Calculate total stakes placed
+    total_stakes = sum(r['stake'] for r in results)
+    
+    # Second pass: calculate profit/loss for each scenario
+    # profitIfWins = what happens if THIS runner WINS (we pay liability, collect other stakes)
+    for r in results:
+        other_stakes = total_stakes - r['stake']
+        r['profitIfWins'] = round(other_stakes - r['liability'], 2)
+        r['potentialReturn'] = r['stake']  # What we collect if this runner loses
+    
+    # Best case: all laid selections lose (we collect all stakes)
+    best_case_profit = total_stakes
+    
+    # Worst case: one of our laid selections wins
+    worst_case_profit = min(r['profitIfWins'] for r in results) if results else 0
+    
+    # For LAY, show best case profit (when any laid selection loses = we win)
+    # Since we're laying to PROFIT when selections lose, show positive expected outcome
+    total_profit = best_case_profit
+    
+    # Store worst case in results for display
+    for r in results:
+        r['worstCase'] = worst_case_profit
+        r['bestCase'] = best_case_profit
+    
     implied_prob = sum(1 / s['price'] for s in selections) * 100
     
     return results, round(total_profit, 2), round(implied_prob, 2)
