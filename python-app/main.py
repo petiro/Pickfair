@@ -375,14 +375,20 @@ class BetfairDutchingApp:
         
         pwd_dialog = tk.Toplevel(self.root)
         pwd_dialog.title("Password Betfair")
-        pwd_dialog.geometry("300x120")
+        pwd_dialog.geometry("350x150")
         pwd_dialog.transient(self.root)
         pwd_dialog.grab_set()
+        
+        # Center dialog on screen
+        pwd_dialog.update_idletasks()
+        x = (pwd_dialog.winfo_screenwidth() // 2) - (175)
+        y = (pwd_dialog.winfo_screenheight() // 2) - (75)
+        pwd_dialog.geometry(f"350x150+{x}+{y}")
         
         frame = ttk.Frame(pwd_dialog, padding=20)
         frame.pack(fill=tk.BOTH, expand=True)
         
-        ttk.Label(frame, text="Password:").pack(anchor=tk.W)
+        ttk.Label(frame, text="Password Betfair:").pack(anchor=tk.W)
         pwd_var = tk.StringVar()
         pwd_entry = ttk.Entry(frame, textvariable=pwd_var, show='*')
         pwd_entry.pack(fill=tk.X, pady=5)
@@ -697,6 +703,12 @@ class BetfairDutchingApp:
                             self.selected_runners[selection_id]['backPrice'] = back_prices[0][0]
                         if lay_prices:
                             self.selected_runners[selection_id]['layPrice'] = lay_prices[0][0]
+                        # Update price based on current bet type
+                        bet_type = self.bet_type_var.get()
+                        if bet_type == 'BACK' and back_prices:
+                            self.selected_runners[selection_id]['price'] = back_prices[0][0]
+                        elif bet_type == 'LAY' and lay_prices:
+                            self.selected_runners[selection_id]['price'] = lay_prices[0][0]
                         self._recalculate()
                         
                 except Exception:
@@ -721,8 +733,25 @@ class BetfairDutchingApp:
             if self.current_market:
                 for runner in self.current_market['runners']:
                     if str(runner['selectionId']) == selection_id:
-                        self.selected_runners[selection_id] = runner.copy()
+                        runner_data = runner.copy()
+                        
+                        # Get current prices from treeview
                         values = list(self.runners_tree.item(item)['values'])
+                        # values: [selection, runnerName, backPrice, backSize, layPrice, laySize]
+                        try:
+                            back_price = float(str(values[2]).replace(',', '.')) if values[2] and values[2] != '-' else 0
+                            lay_price = float(str(values[4]).replace(',', '.')) if values[4] and values[4] != '-' else 0
+                        except (ValueError, IndexError):
+                            back_price = 0
+                            lay_price = 0
+                        
+                        runner_data['backPrice'] = back_price
+                        runner_data['layPrice'] = lay_price
+                        # Set 'price' based on current bet type for dutching calculation
+                        bet_type = self.bet_type_var.get()
+                        runner_data['price'] = back_price if bet_type == 'BACK' else lay_price
+                        
+                        self.selected_runners[selection_id] = runner_data
                         values[0] = 'X'
                         self.runners_tree.item(item, values=values)
                         break
@@ -768,6 +797,14 @@ class BetfairDutchingApp:
             total_stake = 10.0
         
         bet_type = self.bet_type_var.get()
+        
+        # Update price for each selection based on current bet type
+        for sel_id, sel in self.selected_runners.items():
+            if bet_type == 'BACK':
+                sel['price'] = sel.get('backPrice', 0)
+            else:
+                sel['price'] = sel.get('layPrice', 0)
+        
         selections = list(self.selected_runners.values())
         
         try:

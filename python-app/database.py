@@ -37,10 +37,17 @@ class Database:
                 app_key TEXT,
                 certificate TEXT,
                 private_key TEXT,
+                password TEXT,
                 session_token TEXT,
                 session_expiry TEXT
             )
         ''')
+        
+        # Add password column if it doesn't exist (for existing databases)
+        try:
+            cursor.execute('ALTER TABLE settings ADD COLUMN password TEXT')
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS bets (
@@ -111,6 +118,14 @@ class Database:
     def clear_session(self):
         """Clear session token."""
         self.save_session(None, None)
+    
+    def save_password(self, password):
+        """Save or clear password."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE settings SET password = ? WHERE id = 1', (password,))
+        conn.commit()
+        conn.close()
     
     def save_bet(self, event_name, market_id, market_name, bet_type, 
                  selections, total_stake, potential_profit, status):
