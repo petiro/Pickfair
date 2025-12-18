@@ -13,6 +13,7 @@ from datetime import datetime
 from database import Database
 from betfair_client import BetfairClient, MARKET_TYPES
 from dutching import calculate_dutching_stakes, validate_selections, format_currency
+from telegram_listener import TelegramListener, SignalQueue
 
 APP_NAME = "Betfair Dutching"
 APP_VERSION = "3.0.0"
@@ -45,6 +46,9 @@ class BetfairDutchingApp:
         self.booking_monitor_id = None
         self.pending_bookings = []
         self.account_data = {'available': 0, 'exposure': 0, 'total': 0}
+        self.telegram_listener = None
+        self.telegram_signal_queue = SignalQueue()
+        self.telegram_status = 'STOPPED'
         
         self._create_menu()
         self._create_main_layout()
@@ -81,6 +85,15 @@ class BetfairDutchingApp:
         file_menu.add_command(label="Configura Credenziali", command=self._show_credentials_dialog)
         file_menu.add_separator()
         file_menu.add_command(label="Esci", command=self._on_close)
+        
+        telegram_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Telegram", menu=telegram_menu)
+        telegram_menu.add_command(label="Configura Telegram", command=self._show_telegram_settings)
+        telegram_menu.add_command(label="Gestisci Chat", command=self._show_telegram_chats)
+        telegram_menu.add_command(label="Segnali Ricevuti", command=self._show_telegram_signals)
+        telegram_menu.add_separator()
+        telegram_menu.add_command(label="Avvia Listener", command=self._start_telegram_listener)
+        telegram_menu.add_command(label="Ferma Listener", command=self._stop_telegram_listener)
         
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Aiuto", menu=help_menu)
@@ -1624,6 +1637,280 @@ class BetfairDutchingApp:
         ttk.Button(btn_frame, text="Calcola", command=calculate_modal).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Piazza Scommesse", command=place_modal_bets).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Chiudi", command=dialog.destroy).pack(side=tk.RIGHT)
+    
+    def _show_telegram_settings(self):
+        """Show Telegram configuration dialog."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Configura Telegram")
+        dialog.geometry("500x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="Configurazione Telegram", style='Title.TLabel').pack(anchor=tk.W, pady=(0, 20))
+        
+        ttk.Label(frame, text="Per ottenere API ID e Hash vai su my.telegram.org").pack(anchor=tk.W)
+        
+        settings = self.db.get_telegram_settings() or {}
+        
+        ttk.Label(frame, text="API ID:").pack(anchor=tk.W, pady=(10, 0))
+        api_id_var = tk.StringVar(value=settings.get('api_id', ''))
+        ttk.Entry(frame, textvariable=api_id_var, width=40).pack(anchor=tk.W)
+        
+        ttk.Label(frame, text="API Hash:").pack(anchor=tk.W, pady=(10, 0))
+        api_hash_var = tk.StringVar(value=settings.get('api_hash', ''))
+        ttk.Entry(frame, textvariable=api_hash_var, width=40).pack(anchor=tk.W)
+        
+        ttk.Label(frame, text="Numero di Telefono (con prefisso +39):").pack(anchor=tk.W, pady=(10, 0))
+        phone_var = tk.StringVar(value=settings.get('phone_number', ''))
+        ttk.Entry(frame, textvariable=phone_var, width=40).pack(anchor=tk.W)
+        
+        auto_bet_var = tk.BooleanVar(value=bool(settings.get('auto_bet', 0)))
+        ttk.Checkbutton(frame, text="Piazza scommesse automaticamente", variable=auto_bet_var).pack(anchor=tk.W, pady=(10, 0))
+        
+        confirm_var = tk.BooleanVar(value=bool(settings.get('require_confirmation', 1)))
+        ttk.Checkbutton(frame, text="Richiedi conferma prima di scommettere", variable=confirm_var).pack(anchor=tk.W)
+        
+        status_label = ttk.Label(frame, text=f"Stato: {self.telegram_status}")
+        status_label.pack(anchor=tk.W, pady=10)
+        
+        def save_settings():
+            self.db.save_telegram_settings(
+                api_id=api_id_var.get(),
+                api_hash=api_hash_var.get(),
+                session_string=settings.get('session_string'),
+                phone_number=phone_var.get(),
+                enabled=True,
+                auto_bet=auto_bet_var.get(),
+                require_confirmation=confirm_var.get()
+            )
+            messagebox.showinfo("Salvato", "Impostazioni Telegram salvate")
+            dialog.destroy()
+        
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=20)
+        ttk.Button(btn_frame, text="Salva", command=save_settings).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Chiudi", command=dialog.destroy).pack(side=tk.LEFT)
+    
+    def _show_telegram_chats(self):
+        """Show dialog to manage monitored Telegram chats."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Gestisci Chat Telegram")
+        dialog.geometry("500x400")
+        dialog.transient(self.root)
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="Chat Monitorate", style='Title.TLabel').pack(anchor=tk.W)
+        
+        columns = ('chat_id', 'name', 'enabled')
+        tree = ttk.Treeview(frame, columns=columns, show='headings', height=10)
+        tree.heading('chat_id', text='Chat ID')
+        tree.heading('name', text='Nome')
+        tree.heading('enabled', text='Attivo')
+        tree.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        chats = self.db.get_telegram_chats()
+        for chat in chats:
+            tree.insert('', tk.END, iid=str(chat['id']), values=(
+                chat['chat_id'],
+                chat.get('chat_name', ''),
+                'Si' if chat.get('enabled') else 'No'
+            ))
+        
+        add_frame = ttk.Frame(frame)
+        add_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Label(add_frame, text="Aggiungi Chat ID:").pack(side=tk.LEFT)
+        new_chat_var = tk.StringVar()
+        ttk.Entry(add_frame, textvariable=new_chat_var, width=20).pack(side=tk.LEFT, padx=5)
+        
+        def add_chat():
+            chat_id = new_chat_var.get().strip()
+            if chat_id:
+                self.db.add_telegram_chat(chat_id)
+                tree.insert('', tk.END, values=(chat_id, '', 'Si'))
+                new_chat_var.set('')
+        
+        def remove_chat():
+            selected = tree.selection()
+            for item in selected:
+                values = tree.item(item)['values']
+                if values:
+                    self.db.remove_telegram_chat(values[0])
+                    tree.delete(item)
+        
+        ttk.Button(add_frame, text="Aggiungi", command=add_chat).pack(side=tk.LEFT, padx=5)
+        ttk.Button(add_frame, text="Rimuovi", command=remove_chat).pack(side=tk.LEFT)
+        
+        ttk.Label(frame, text="Suggerimento: Per trovare l'ID di un gruppo, inoltra un messaggio a @userinfobot").pack(anchor=tk.W)
+    
+    def _show_telegram_signals(self):
+        """Show received Telegram signals."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Segnali Telegram Ricevuti")
+        dialog.geometry("700x500")
+        dialog.transient(self.root)
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="Segnali Ricevuti", style='Title.TLabel').pack(anchor=tk.W)
+        
+        columns = ('data', 'selezione', 'tipo', 'quota', 'stake', 'stato')
+        tree = ttk.Treeview(frame, columns=columns, show='headings', height=15)
+        tree.heading('data', text='Data')
+        tree.heading('selezione', text='Selezione')
+        tree.heading('tipo', text='Tipo')
+        tree.heading('quota', text='Quota')
+        tree.heading('stake', text='Stake')
+        tree.heading('stato', text='Stato')
+        tree.column('data', width=120)
+        tree.column('selezione', width=100)
+        tree.column('tipo', width=60)
+        tree.column('quota', width=60)
+        tree.column('stake', width=60)
+        tree.column('stato', width=80)
+        
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=10)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
+        
+        signals = self.db.get_recent_signals(50)
+        for sig in signals:
+            tree.insert('', tk.END, iid=str(sig['id']), values=(
+                sig.get('received_at', '')[:16] if sig.get('received_at') else '',
+                sig.get('parsed_selection', ''),
+                sig.get('parsed_side', ''),
+                f"{sig.get('parsed_odds', 0):.2f}" if sig.get('parsed_odds') else '',
+                f"{sig.get('parsed_stake', 0):.2f}" if sig.get('parsed_stake') else '',
+                sig.get('status', '')
+            ))
+        
+        def process_selected():
+            selected = tree.selection()
+            if not selected:
+                return
+            if not self.client:
+                messagebox.showwarning("Attenzione", "Connettiti prima a Betfair")
+                return
+            messagebox.showinfo("Info", "Funzionalita in sviluppo: cerca mercato e piazza scommessa")
+        
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=10)
+        ttk.Button(btn_frame, text="Processa Selezionato", command=process_selected).pack(side=tk.LEFT)
+    
+    def _start_telegram_listener(self):
+        """Start the Telegram listener."""
+        settings = self.db.get_telegram_settings()
+        if not settings or not settings.get('api_id') or not settings.get('api_hash'):
+            messagebox.showwarning("Attenzione", "Configura prima le credenziali Telegram")
+            return
+        
+        try:
+            self.telegram_listener = TelegramListener(
+                api_id=int(settings['api_id']),
+                api_hash=settings['api_hash'],
+                session_string=settings.get('session_string')
+            )
+            
+            chats = self.db.get_telegram_chats()
+            chat_ids = [int(c['chat_id']) for c in chats if c.get('enabled')]
+            self.telegram_listener.set_monitored_chats(chat_ids)
+            
+            def on_signal(signal):
+                self.telegram_signal_queue.add(signal)
+                self.db.save_telegram_signal(
+                    signal.get('chat_id', ''),
+                    signal.get('sender_id', ''),
+                    signal.get('raw_text', ''),
+                    signal
+                )
+                self.root.after(0, lambda: self._notify_new_signal(signal))
+            
+            def on_status(status, message):
+                self.telegram_status = status
+                if status == 'AUTH_REQUIRED':
+                    self.root.after(0, self._show_telegram_auth)
+                elif status == 'CONNECTED':
+                    self.root.after(0, lambda: messagebox.showinfo("Telegram", "Connesso a Telegram"))
+            
+            self.telegram_listener.set_callbacks(on_signal=on_signal, on_status=on_status)
+            self.telegram_listener.start()
+            
+            self.telegram_status = 'STARTING'
+            messagebox.showinfo("Telegram", "Listener Telegram avviato")
+            
+        except Exception as e:
+            messagebox.showerror("Errore", f"Errore avvio Telegram: {e}")
+    
+    def _stop_telegram_listener(self):
+        """Stop the Telegram listener."""
+        if self.telegram_listener:
+            self.telegram_listener.stop()
+            self.telegram_listener = None
+        self.telegram_status = 'STOPPED'
+        messagebox.showinfo("Telegram", "Listener Telegram fermato")
+    
+    def _show_telegram_auth(self):
+        """Show Telegram authentication dialog for entering code."""
+        settings = self.db.get_telegram_settings()
+        phone = settings.get('phone_number', '')
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Autenticazione Telegram")
+        dialog.geometry("400x200")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text=f"Inserisci il codice inviato a {phone}").pack(pady=10)
+        
+        code_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=code_var, width=20).pack(pady=10)
+        
+        ttk.Label(frame, text="Password 2FA (se attiva):").pack()
+        password_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=password_var, width=20, show='*').pack(pady=5)
+        
+        def submit_code():
+            import asyncio
+            
+            async def do_auth():
+                success, result = await self.telegram_listener.sign_in(
+                    phone, code_var.get(), password_var.get() or None
+                )
+                if success:
+                    self.db.save_telegram_session(result)
+                    self.root.after(0, lambda: messagebox.showinfo("Successo", "Autenticazione completata"))
+                    self.root.after(0, dialog.destroy)
+                else:
+                    self.root.after(0, lambda: messagebox.showerror("Errore", result))
+            
+            if self.telegram_listener and self.telegram_listener.loop:
+                asyncio.run_coroutine_threadsafe(do_auth(), self.telegram_listener.loop)
+        
+        ttk.Button(frame, text="Conferma", command=submit_code).pack(pady=10)
+    
+    def _notify_new_signal(self, signal):
+        """Notify user of new betting signal."""
+        settings = self.db.get_telegram_settings() or {}
+        
+        msg = f"Nuovo segnale ricevuto:\n"
+        msg += f"Tipo: {signal.get('side', 'N/A')}\n"
+        msg += f"Selezione: {signal.get('selection', 'N/A')}\n"
+        msg += f"Quota: {signal.get('odds', 'N/A')}\n"
+        
+        if settings.get('require_confirmation') or not settings.get('auto_bet'):
+            messagebox.showinfo("Segnale Telegram", msg)
+        else:
+            pass
     
     def run(self):
         """Start the application."""

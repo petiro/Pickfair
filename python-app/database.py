@@ -106,9 +106,53 @@ class Database:
             )
         ''')
         
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS telegram_settings (
+                id INTEGER PRIMARY KEY,
+                api_id TEXT,
+                api_hash TEXT,
+                session_string TEXT,
+                phone_number TEXT,
+                enabled INTEGER DEFAULT 0,
+                auto_bet INTEGER DEFAULT 0,
+                require_confirmation INTEGER DEFAULT 1
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS telegram_chats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT UNIQUE,
+                chat_name TEXT,
+                enabled INTEGER DEFAULT 1,
+                added_at TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS telegram_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT,
+                sender_id TEXT,
+                raw_text TEXT,
+                parsed_side TEXT,
+                parsed_selection TEXT,
+                parsed_odds REAL,
+                parsed_stake REAL,
+                status TEXT DEFAULT 'PENDING',
+                bet_id TEXT,
+                received_at TEXT,
+                processed_at TEXT
+            )
+        ''')
+        
         cursor.execute('SELECT COUNT(*) FROM settings')
         if cursor.fetchone()[0] == 0:
             cursor.execute('INSERT INTO settings (id) VALUES (1)')
+        
+        cursor.execute('SELECT COUNT(*) FROM telegram_settings')
+        if cursor.fetchone()[0] == 0:
+            cursor.execute('INSERT INTO telegram_settings (id) VALUES (1)')
         
         conn.commit()
         conn.close()
@@ -368,3 +412,128 @@ class Database:
         ''', (datetime.now().isoformat(), rule_id))
         conn.commit()
         conn.close()
+    
+    def get_telegram_settings(self):
+        """Get Telegram settings."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM telegram_settings WHERE id = 1')
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+    
+    def save_telegram_settings(self, api_id, api_hash, session_string=None, 
+                                phone_number=None, enabled=False, auto_bet=False,
+                                require_confirmation=True):
+        """Save Telegram settings."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE telegram_settings SET 
+                api_id = ?, api_hash = ?, session_string = ?, phone_number = ?,
+                enabled = ?, auto_bet = ?, require_confirmation = ?
+            WHERE id = 1
+        ''', (api_id, api_hash, session_string, phone_number,
+              1 if enabled else 0, 1 if auto_bet else 0, 1 if require_confirmation else 0))
+        conn.commit()
+        conn.close()
+    
+    def save_telegram_session(self, session_string):
+        """Save Telegram session string."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE telegram_settings SET session_string = ? WHERE id = 1', (session_string,))
+        conn.commit()
+        conn.close()
+    
+    def get_telegram_chats(self):
+        """Get monitored Telegram chats."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM telegram_chats ORDER BY added_at DESC')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+    
+    def add_telegram_chat(self, chat_id, chat_name=''):
+        """Add a chat to monitor."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT INTO telegram_chats (chat_id, chat_name, enabled, added_at)
+                VALUES (?, ?, 1, ?)
+            ''', (str(chat_id), chat_name, datetime.now().isoformat()))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            pass
+        conn.close()
+    
+    def remove_telegram_chat(self, chat_id):
+        """Remove a chat from monitoring."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM telegram_chats WHERE chat_id = ?', (str(chat_id),))
+        conn.commit()
+        conn.close()
+    
+    def save_telegram_signal(self, chat_id, sender_id, raw_text, parsed_signal):
+        """Save a received Telegram signal."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO telegram_signals 
+            (chat_id, sender_id, raw_text, parsed_side, parsed_selection, 
+             parsed_odds, parsed_stake, status, received_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+        ''', (
+            str(chat_id), str(sender_id), raw_text,
+            parsed_signal.get('side'), parsed_signal.get('selection'),
+            parsed_signal.get('odds'), parsed_signal.get('stake'),
+            datetime.now().isoformat()
+        ))
+        signal_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return signal_id
+    
+    def get_pending_signals(self):
+        """Get pending Telegram signals."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM telegram_signals WHERE status = 'PENDING' ORDER BY received_at DESC
+        ''')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+    
+    def update_signal_status(self, signal_id, status, bet_id=None):
+        """Update signal status."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        if bet_id:
+            cursor.execute('''
+                UPDATE telegram_signals SET status = ?, bet_id = ?, processed_at = ? WHERE id = ?
+            ''', (status, bet_id, datetime.now().isoformat(), signal_id))
+        else:
+            cursor.execute('''
+                UPDATE telegram_signals SET status = ?, processed_at = ? WHERE id = ?
+            ''', (status, datetime.now().isoformat(), signal_id))
+        conn.commit()
+        conn.close()
+    
+    def get_recent_signals(self, limit=50):
+        """Get recent Telegram signals."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM telegram_signals ORDER BY received_at DESC LIMIT ?
+        ''', (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
