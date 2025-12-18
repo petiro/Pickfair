@@ -65,14 +65,20 @@ class Database:
         conn.close()
     
     def get_settings(self):
-        """Get Betfair settings."""
+        """Get Betfair settings. Strips whitespace from string values."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM settings WHERE id = 1')
         row = cursor.fetchone()
         conn.close()
-        return dict(row) if row else None
+        if row:
+            settings = dict(row)
+            for key in ['username', 'app_key', 'certificate', 'private_key']:
+                if settings.get(key) and isinstance(settings[key], str):
+                    settings[key] = settings[key].strip()
+            return settings
+        return None
     
     def save_credentials(self, username, app_key, certificate, private_key):
         """Save Betfair credentials. Strips whitespace from username and app_key."""
