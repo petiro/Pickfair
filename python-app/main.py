@@ -539,6 +539,10 @@ class PickfairApp:
         
         self._update_balance()
         self._load_events()
+        
+        # Auto-enable refresh on connect
+        self.auto_refresh_var.set(True)
+        self._start_auto_refresh()
     
     def _on_connection_error(self, error):
         """Handle connection error."""
