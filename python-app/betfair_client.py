@@ -655,7 +655,11 @@ class BetfairClient:
         - If original bet was BACK, cashout is LAY
         - If original bet was LAY, cashout is BACK
         
-        Returns dict with cashout_stake, green_up (profit if win), red (loss if lose)
+        For green-up (equal profit all outcomes):
+        - BACK position: LAY stake = (back_stake * back_price) / lay_price
+        - LAY position: BACK stake = (lay_stake * lay_price) / back_price
+        
+        Returns dict with cashout_stake, green_up, profit_if_win, profit_if_lose
         """
         if not self.client:
             raise Exception("Non connesso a Betfair")
@@ -687,33 +691,51 @@ class BetfairClient:
         if not current_price:
             raise Exception("Prezzo corrente non disponibile")
         
-        # Calculate cashout stake
+        # Calculate cashout stake using correct hedge formulas
         if side == 'BACK':
-            # Original BACK bet: cashout by LAYing
-            # Cashout stake = (original stake * original price) / current price
+            # Original BACK bet: hedge by LAYing
+            # LAY stake = (back_stake * back_price) / lay_price
+            # This ensures equal profit on all outcomes
             cashout_stake = (matched_stake * matched_price) / current_price
             
-            # If selection wins: profit from BACK, loss from LAY
+            # Green-up profit calculation:
+            # If wins: back_profit - lay_liability = stake*(back_price-1) - cashout_stake*(lay_price-1)
+            # If loses: -back_stake + lay_stake = -stake + cashout_stake
             profit_if_win = matched_stake * (matched_price - 1) - cashout_stake * (current_price - 1)
-            # If selection loses: loss from BACK (stake), profit from LAY (stake)
             profit_if_lose = -matched_stake + cashout_stake
+            
         else:
-            # Original LAY bet: cashout by BACKing
-            # Cashout stake = liability / current price
-            liability = matched_stake * (matched_price - 1)
+            # Original LAY bet: hedge by BACKing
+            # BACK stake = (lay_stake * lay_price) / back_price
             cashout_stake = (matched_stake * matched_price) / current_price
             
-            # If selection wins: loss from LAY (liability), profit from BACK
-            profit_if_win = -liability + cashout_stake * (current_price - 1)
-            # If selection loses: profit from LAY (stake), loss from BACK (stake)
+            # Original LAY liability
+            original_liability = matched_stake * (matched_price - 1)
+            
+            # If wins: -lay_liability + back_profit = -liability + cashout_stake*(back_price-1)
+            # If loses: +lay_stake - back_stake = matched_stake - cashout_stake
+            profit_if_win = -original_liability + cashout_stake * (current_price - 1)
             profit_if_lose = matched_stake - cashout_stake
         
-        # Calculate green-up (equal profit on all outcomes)
-        total_profit = profit_if_win + profit_if_lose
-        green_up = total_profit / 2
+        # Round stake to 2 decimal places, enforce €2 minimum for Italy
+        cashout_stake = round(cashout_stake, 2)
+        cashout_stake = max(2.0, cashout_stake)
+        
+        # Recalculate P/L with adjusted stake
+        if side == 'BACK':
+            profit_if_win = matched_stake * (matched_price - 1) - cashout_stake * (current_price - 1)
+            profit_if_lose = -matched_stake + cashout_stake
+        else:
+            original_liability = matched_stake * (matched_price - 1)
+            profit_if_win = -original_liability + cashout_stake * (current_price - 1)
+            profit_if_lose = matched_stake - cashout_stake
+        
+        # Green-up is the guaranteed profit (average of both outcomes with proper hedge)
+        # With perfect hedge, profit_if_win should equal profit_if_lose
+        green_up = (profit_if_win + profit_if_lose) / 2
         
         return {
-            'cashout_stake': round(cashout_stake, 2),
+            'cashout_stake': cashout_stake,
             'current_price': current_price,
             'profit_if_win': round(profit_if_win, 2),
             'profit_if_lose': round(profit_if_lose, 2),

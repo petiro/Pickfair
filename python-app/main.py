@@ -44,6 +44,7 @@ class BetfairDutchingApp:
         self.live_mode = False
         self.live_refresh_id = None
         self.booking_monitor_id = None
+        self.auto_cashout_monitor_id = None
         self.pending_bookings = []
         self.account_data = {'available': 0, 'exposure': 0, 'total': 0}
         self.telegram_listener = None
@@ -56,6 +57,7 @@ class BetfairDutchingApp:
         self._load_settings()
         self._configure_styles()
         self._start_booking_monitor()
+        self._start_auto_cashout_monitor()
     
     def _configure_styles(self):
         """Configure ttk styles with FairBot-like colors."""
@@ -1271,6 +1273,11 @@ class BetfairDutchingApp:
         bookings_frame = ttk.Frame(notebook, padding=10)
         notebook.add(bookings_frame, text="Prenotazioni")
         self._create_bookings_view(bookings_frame)
+        
+        # Cashout tab
+        cashout_frame = ttk.Frame(notebook, padding=10)
+        notebook.add(cashout_frame, text="Cashout")
+        self._create_cashout_view(cashout_frame, dialog)
     
     def _create_bets_list(self, parent, bets):
         """Create a list view of bets."""
@@ -1416,6 +1423,199 @@ class BetfairDutchingApp:
         ttk.Button(parent, text="Cancella Prenotazione", command=cancel_booking).pack(pady=5)
         ttk.Label(parent, text="Le prenotazioni verranno attivate quando la quota raggiunge il target").pack()
     
+    def _create_cashout_view(self, parent, dialog):
+        """Create cashout view with positions and cashout buttons."""
+        if not self.client:
+            ttk.Label(parent, text="Non connesso a Betfair").pack()
+            return
+        
+        # Header
+        ttk.Label(parent, text="Posizioni Aperte con Cashout", style='Title.TLabel').pack(anchor=tk.W, pady=(0, 10))
+        
+        # Positions list
+        columns = ('mercato', 'selezione', 'tipo', 'quota', 'stake', 'p/l_attuale', 'azione')
+        tree = ttk.Treeview(parent, columns=columns, show='headings', height=10)
+        tree.heading('mercato', text='Mercato')
+        tree.heading('selezione', text='Selezione')
+        tree.heading('tipo', text='Tipo')
+        tree.heading('quota', text='Quota')
+        tree.heading('stake', text='Stake')
+        tree.heading('p/l_attuale', text='P/L Attuale')
+        tree.heading('azione', text='Azione')
+        tree.column('mercato', width=100)
+        tree.column('selezione', width=100)
+        tree.column('tipo', width=50)
+        tree.column('quota', width=60)
+        tree.column('stake', width=60)
+        tree.column('p/l_attuale', width=80)
+        tree.column('azione', width=80)
+        
+        tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Store position data for cashout
+        positions_data = {}
+        no_positions_label = [None]  # Use list to allow modification in nested function
+        
+        def load_positions():
+            """Load matched orders and calculate P/L."""
+            # Clear previous no-positions label if exists
+            if no_positions_label[0]:
+                no_positions_label[0].destroy()
+                no_positions_label[0] = None
+            
+            try:
+                orders = self.client.get_current_orders()
+                matched = orders.get('matched', [])
+                
+                for item in tree.get_children():
+                    tree.delete(item)
+                positions_data.clear()
+                
+                for order in matched:
+                    market_id = order.get('marketId')
+                    selection_id = order.get('selectionId')
+                    side = order.get('side')
+                    price = order.get('price', 0)
+                    stake = order.get('sizeMatched', 0)
+                    
+                    if stake > 0:
+                        try:
+                            cashout_info = self.client.calculate_cashout(
+                                market_id, selection_id, side, stake, price
+                            )
+                            pl_display = f"{cashout_info['green_up']:+.2f}"
+                            pl_color = 'green' if cashout_info['green_up'] > 0 else 'red'
+                        except:
+                            cashout_info = None
+                            pl_display = "N/D"
+                        
+                        item_id = f"{order.get('betId')}"
+                        tree.insert('', tk.END, iid=item_id, values=(
+                            market_id[:12] if market_id else '',
+                            order.get('runnerName', str(selection_id))[:15],
+                            side,
+                            f"{price:.2f}",
+                            f"{stake:.2f}",
+                            pl_display,
+                            "Cashout"
+                        ))
+                        
+                        positions_data[item_id] = {
+                            'market_id': market_id,
+                            'selection_id': selection_id,
+                            'side': side,
+                            'price': price,
+                            'stake': stake,
+                            'cashout_info': cashout_info
+                        }
+                
+                if not positions_data:
+                    no_positions_label[0] = ttk.Label(parent, text="Nessuna posizione aperta al momento", 
+                             font=('Segoe UI', 10))
+                    no_positions_label[0].pack(anchor=tk.W, pady=5)
+                    cashout_btn.config(state='disabled')
+                else:
+                    cashout_btn.config(state='normal')
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Errore", f"Impossibile caricare posizioni: {e}"))
+        
+        def do_cashout():
+            """Execute cashout for selected position."""
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("Attenzione", "Seleziona una posizione")
+                return
+            
+            for item_id in selected:
+                pos = positions_data.get(item_id)
+                if not pos or not pos.get('cashout_info'):
+                    continue
+                
+                info = pos['cashout_info']
+                confirm = messagebox.askyesno(
+                    "Conferma Cashout",
+                    f"Eseguire cashout?\n\n"
+                    f"Tipo: {info['cashout_side']} @ {info['current_price']:.2f}\n"
+                    f"Stake: {info['cashout_stake']:.2f}\n"
+                    f"Profitto garantito: {info['green_up']:+.2f}"
+                )
+                
+                if confirm:
+                    try:
+                        result = self.client.execute_cashout(
+                            pos['market_id'],
+                            pos['selection_id'],
+                            info['cashout_side'],
+                            info['cashout_stake'],
+                            info['current_price']
+                        )
+                        
+                        if result.get('status') == 'SUCCESS':
+                            messagebox.showinfo("Successo", f"Cashout eseguito!\nProfitto bloccato: {info['green_up']:+.2f}")
+                            load_positions()
+                        else:
+                            messagebox.showerror("Errore", f"Cashout fallito: {result.get('status')}")
+                    except Exception as e:
+                        messagebox.showerror("Errore", f"Errore cashout: {e}")
+        
+        # Buttons frame
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Button(btn_frame, text="Aggiorna Posizioni", command=load_positions).pack(side=tk.LEFT, padx=5)
+        
+        cashout_btn = tk.Button(btn_frame, text="CASHOUT", bg='#28a745', fg='white', 
+                               font=('Segoe UI', 10, 'bold'), command=do_cashout)
+        cashout_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Auto-cashout section
+        auto_frame = ttk.LabelFrame(parent, text="Auto-Cashout", padding=10)
+        auto_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Label(auto_frame, text="Target Profitto:").grid(row=0, column=0, padx=5)
+        profit_target = ttk.Entry(auto_frame, width=10)
+        profit_target.insert(0, "10.00")
+        profit_target.grid(row=0, column=1, padx=5)
+        
+        ttk.Label(auto_frame, text="Limite Perdita:").grid(row=0, column=2, padx=5)
+        loss_limit = ttk.Entry(auto_frame, width=10)
+        loss_limit.insert(0, "-5.00")
+        loss_limit.grid(row=0, column=3, padx=5)
+        
+        def set_auto_cashout():
+            """Set auto-cashout rule for selected position."""
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("Attenzione", "Seleziona una posizione")
+                return
+            
+            try:
+                target = float(profit_target.get())
+                limit = float(loss_limit.get())
+            except:
+                messagebox.showerror("Errore", "Valori non validi")
+                return
+            
+            for item_id in selected:
+                pos = positions_data.get(item_id)
+                if pos:
+                    self.db.save_auto_cashout_rule(
+                        pos['market_id'],
+                        item_id,
+                        target,
+                        limit
+                    )
+            
+            messagebox.showinfo("Info", "Auto-cashout impostato")
+        
+        ttk.Button(auto_frame, text="Imposta Auto-Cashout", command=set_auto_cashout).grid(row=0, column=4, padx=10)
+        
+        ttk.Label(parent, text="Auto-cashout esegue automaticamente quando P/L raggiunge target o limite",
+                 font=('Segoe UI', 8)).pack(anchor=tk.W)
+        
+        # Load positions on view creation
+        load_positions()
+    
     def _start_booking_monitor(self):
         """Start monitoring bookings for price triggers."""
         self._do_booking_monitor()
@@ -1473,6 +1673,82 @@ class BetfairDutchingApp:
                                 else:
                                     self.db.update_booking_status(booking['id'], 'FAILED')
                             break
+            except Exception:
+                pass
+    
+    def _start_auto_cashout_monitor(self):
+        """Start monitoring positions for auto-cashout triggers."""
+        self._do_auto_cashout_monitor()
+    
+    def _do_auto_cashout_monitor(self):
+        """Single auto-cashout monitor cycle."""
+        if self.client:
+            rules = self.db.get_active_auto_cashout_rules()
+            if rules:
+                threading.Thread(target=self._check_auto_cashout_triggers, args=(rules,), daemon=True).start()
+        # Schedule next check every 15 seconds
+        self.auto_cashout_monitor_id = self.root.after(15000, self._do_auto_cashout_monitor)
+    
+    def _check_auto_cashout_triggers(self, rules):
+        """Check if any auto-cashout rule should be triggered."""
+        if not self.client:
+            return
+        
+        for rule in rules:
+            try:
+                market_id = rule['market_id']
+                bet_id = rule['bet_id']
+                profit_target = rule['profit_target']
+                loss_limit = rule['loss_limit']
+                
+                # Get current orders to find the position
+                orders = self.client.get_current_orders()
+                matched = orders.get('matched', [])
+                
+                for order in matched:
+                    if str(order.get('betId')) == str(bet_id):
+                        selection_id = order.get('selectionId')
+                        side = order.get('side')
+                        price = order.get('price', 0)
+                        stake = order.get('sizeMatched', 0)
+                        
+                        if stake > 0:
+                            try:
+                                cashout_info = self.client.calculate_cashout(
+                                    market_id, selection_id, side, stake, price
+                                )
+                                current_pl = cashout_info['green_up']
+                                
+                                # Check if should trigger
+                                should_trigger = False
+                                trigger_reason = ""
+                                
+                                if current_pl >= profit_target:
+                                    should_trigger = True
+                                    trigger_reason = f"Target profitto raggiunto: {current_pl:+.2f}"
+                                elif current_pl <= loss_limit:
+                                    should_trigger = True
+                                    trigger_reason = f"Limite perdita raggiunto: {current_pl:+.2f}"
+                                
+                                if should_trigger:
+                                    # Execute cashout
+                                    result = self.client.execute_cashout(
+                                        market_id,
+                                        selection_id,
+                                        cashout_info['cashout_side'],
+                                        cashout_info['cashout_stake'],
+                                        cashout_info['current_price']
+                                    )
+                                    
+                                    if result.get('status') == 'SUCCESS':
+                                        self.db.deactivate_auto_cashout_rule(rule['id'])
+                                        # Use root.after to safely show message from main thread
+                                        def show_cashout_message(reason):
+                                            messagebox.showinfo("Auto-Cashout", f"Cashout automatico eseguito!\n{reason}")
+                                        self.root.after(0, lambda: show_cashout_message(trigger_reason))
+                            except Exception:
+                                pass
+                        break
             except Exception:
                 pass
     
