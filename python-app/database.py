@@ -75,14 +75,19 @@ class Database:
         return dict(row) if row else None
     
     def save_credentials(self, username, app_key, certificate, private_key):
-        """Save Betfair credentials."""
+        """Save Betfair credentials. Strips whitespace from username and app_key."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
             UPDATE settings SET 
                 username = ?, app_key = ?, certificate = ?, private_key = ?
             WHERE id = 1
-        ''', (username, app_key, certificate, private_key))
+        ''', (
+            username.strip() if username else username,
+            app_key.strip() if app_key else app_key,
+            certificate.strip() if certificate else certificate,
+            private_key.strip() if private_key else private_key
+        ))
         conn.commit()
         conn.close()
     
