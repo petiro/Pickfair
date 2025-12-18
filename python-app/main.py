@@ -1112,16 +1112,17 @@ class BetfairDutchingApp:
     
     def _start_live_refresh(self):
         """Start auto-refresh for live odds."""
-        if self.live_refresh_id:
-            self.root.after_cancel(self.live_refresh_id)
-        
-        def refresh():
-            if self.live_mode and self.current_market:
-                self._refresh_prices()
-            if self.live_mode:
-                self.live_refresh_id = self.root.after(LIVE_REFRESH_INTERVAL, refresh)
-        
-        self.live_refresh_id = self.root.after(LIVE_REFRESH_INTERVAL, refresh)
+        self._stop_live_refresh()  # Cancel any existing timer
+        self._do_live_refresh()
+    
+    def _do_live_refresh(self):
+        """Single live refresh cycle."""
+        if not self.live_mode:
+            return
+        if self.current_market:
+            self._refresh_prices()
+        # Schedule next refresh
+        self.live_refresh_id = self.root.after(LIVE_REFRESH_INTERVAL, self._do_live_refresh)
     
     def _stop_live_refresh(self):
         """Stop auto-refresh for live odds."""
@@ -1363,49 +1364,62 @@ class BetfairDutchingApp:
     
     def _start_booking_monitor(self):
         """Start monitoring bookings for price triggers."""
-        def monitor():
-            if self.client and self.pending_bookings:
-                self._check_booking_triggers()
-            self.booking_monitor_id = self.root.after(10000, monitor)  # Check every 10 seconds
-        
-        self.booking_monitor_id = self.root.after(10000, monitor)
+        self._do_booking_monitor()
     
-    def _check_booking_triggers(self):
-        """Check if any booking should be triggered."""
-        bookings = self.db.get_pending_bookings()
-        self.pending_bookings = bookings
+    def _do_booking_monitor(self):
+        """Single booking monitor cycle."""
+        if self.client:
+            bookings = self.db.get_pending_bookings()
+            self.pending_bookings = bookings
+            if bookings:
+                # Run in background thread to avoid UI blocking
+                threading.Thread(target=self._check_booking_triggers, args=(bookings,), daemon=True).start()
+        # Schedule next check
+        self.booking_monitor_id = self.root.after(10000, self._do_booking_monitor)
+    
+    def _check_booking_triggers(self, bookings):
+        """Check if any booking should be triggered (runs in background thread)."""
+        if not self.client:
+            return
         
+        # Group bookings by market to reduce API calls
+        markets_to_check = {}
         for booking in bookings:
+            mid = booking['market_id']
+            if mid not in markets_to_check:
+                markets_to_check[mid] = []
+            markets_to_check[mid].append(booking)
+        
+        for market_id, market_bookings in markets_to_check.items():
             try:
-                # Fetch current price
-                market = self.client.get_market_with_prices(booking['market_id'])
-                for runner in market['runners']:
-                    if runner['selectionId'] == booking['selection_id']:
-                        current_price = runner['backPrice'] if booking['side'] == 'BACK' else runner['layPrice']
-                        
-                        # Check if target reached
-                        should_trigger = False
-                        if booking['side'] == 'BACK' and current_price and current_price >= booking['target_price']:
-                            should_trigger = True
-                        elif booking['side'] == 'LAY' and current_price and current_price <= booking['target_price']:
-                            should_trigger = True
-                        
-                        if should_trigger:
-                            # Place the bet
-                            result = self.client.place_bets(booking['market_id'], [{
-                                'selectionId': booking['selection_id'],
-                                'side': booking['side'],
-                                'price': current_price,
-                                'size': booking['stake']
-                            }])
+                market = self.client.get_market_with_prices(market_id)
+                
+                for booking in market_bookings:
+                    for runner in market['runners']:
+                        if runner['selectionId'] == booking['selection_id']:
+                            current_price = runner.get('backPrice') if booking['side'] == 'BACK' else runner.get('layPrice')
                             
-                            if result['status'] == 'SUCCESS':
-                                bet_id = result['instructionReports'][0].get('betId') if result['instructionReports'] else None
-                                self.db.update_booking_status(booking['id'], 'TRIGGERED', bet_id)
-                            else:
-                                self.db.update_booking_status(booking['id'], 'FAILED')
-                        break
-            except:
+                            should_trigger = False
+                            if booking['side'] == 'BACK' and current_price and current_price >= booking['target_price']:
+                                should_trigger = True
+                            elif booking['side'] == 'LAY' and current_price and current_price <= booking['target_price']:
+                                should_trigger = True
+                            
+                            if should_trigger:
+                                result = self.client.place_bets(market_id, [{
+                                    'selectionId': booking['selection_id'],
+                                    'side': booking['side'],
+                                    'price': current_price,
+                                    'size': booking['stake']
+                                }])
+                                
+                                if result.get('status') == 'SUCCESS':
+                                    bet_id = result['instructionReports'][0].get('betId') if result.get('instructionReports') else None
+                                    self.db.update_booking_status(booking['id'], 'TRIGGERED', bet_id)
+                                else:
+                                    self.db.update_booking_status(booking['id'], 'FAILED')
+                            break
+            except Exception:
                 pass
     
     def _show_booking_dialog(self, selection_id, runner_name, current_price, market_id):
