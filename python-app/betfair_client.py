@@ -82,36 +82,39 @@ class BetfairClient:
         self.cert_pem = cert_pem
         self.key_pem = key_pem
         self.client = None
-        self.temp_cert_file = None
-        self.temp_key_file = None
+        self.temp_certs_dir = None
         self.stream = None
         self.stream_thread = None
         self.streaming_active = False
         self.price_callbacks = {}
     
     def _create_temp_cert_files(self):
-        """Create temporary certificate files for betfairlightweight."""
-        self.temp_cert_file = tempfile.NamedTemporaryFile(
-            mode='w', suffix='.pem', delete=False
-        )
-        self.temp_cert_file.write(self.cert_pem)
-        self.temp_cert_file.close()
+        """Create temporary certificate directory for betfairlightweight.
         
-        self.temp_key_file = tempfile.NamedTemporaryFile(
-            mode='w', suffix='.pem', delete=False
-        )
-        self.temp_key_file.write(self.key_pem)
-        self.temp_key_file.close()
+        betfairlightweight expects a directory containing:
+        - client-2048.crt (or .pem)
+        - client-2048.key (or .pem)
+        """
+        import shutil
         
-        return self.temp_cert_file.name, self.temp_key_file.name
+        self.temp_certs_dir = tempfile.mkdtemp(prefix='betfair_certs_')
+        
+        cert_file_path = os.path.join(self.temp_certs_dir, 'client-2048.crt')
+        with open(cert_file_path, 'w') as f:
+            f.write(self.cert_pem)
+        
+        key_file_path = os.path.join(self.temp_certs_dir, 'client-2048.key')
+        with open(key_file_path, 'w') as f:
+            f.write(self.key_pem)
+        
+        return self.temp_certs_dir
     
     def _cleanup_temp_files(self):
-        """Clean up temporary certificate files."""
+        """Clean up temporary certificate directory."""
+        import shutil
         try:
-            if self.temp_cert_file and os.path.exists(self.temp_cert_file.name):
-                os.unlink(self.temp_cert_file.name)
-            if self.temp_key_file and os.path.exists(self.temp_key_file.name):
-                os.unlink(self.temp_key_file.name)
+            if self.temp_certs_dir and os.path.exists(self.temp_certs_dir):
+                shutil.rmtree(self.temp_certs_dir)
         except:
             pass
     
@@ -120,14 +123,14 @@ class BetfairClient:
         Login to Betfair Italy using SSL certificate authentication.
         Uses locale="italy" for Italian Exchange endpoints.
         """
-        cert_path, key_path = self._create_temp_cert_files()
+        certs_dir = self._create_temp_cert_files()
         
         try:
             self.client = betfairlightweight.APIClient(
                 username=self.username,
                 password=password,
                 app_key=self.app_key,
-                certs=(cert_path, key_path),
+                certs=certs_dir,
                 locale="italy"
             )
             
