@@ -15,9 +15,10 @@ from betfair_client import BetfairClient, MARKET_TYPES
 from dutching import calculate_dutching_stakes, validate_selections, format_currency
 
 APP_NAME = "Betfair Dutching"
-APP_VERSION = "2.0.0"
-WINDOW_WIDTH = 1300
-WINDOW_HEIGHT = 850
+APP_VERSION = "3.0.0"
+WINDOW_WIDTH = 1400
+WINDOW_HEIGHT = 900
+LIVE_REFRESH_INTERVAL = 5000  # 5 seconds for live odds
 
 
 class BetfairDutchingApp:
@@ -39,11 +40,17 @@ class BetfairDutchingApp:
         self.available_markets = []
         self.selected_runners = {}
         self.streaming_active = False
+        self.live_mode = False
+        self.live_refresh_id = None
+        self.booking_monitor_id = None
+        self.pending_bookings = []
+        self.account_data = {'available': 0, 'exposure': 0, 'total': 0}
         
         self._create_menu()
         self._create_main_layout()
         self._load_settings()
         self._configure_styles()
+        self._start_booking_monitor()
     
     def _configure_styles(self):
         """Configure ttk styles with FairBot-like colors."""
@@ -102,7 +109,7 @@ class BetfairDutchingApp:
         self._create_dutching_panel(content_frame)
     
     def _create_status_bar(self):
-        """Create status bar with connection info."""
+        """Create status bar with connection info and mode buttons."""
         status_frame = ttk.Frame(self.main_frame)
         status_frame.pack(fill=tk.X, pady=(0, 10))
         
@@ -120,6 +127,16 @@ class BetfairDutchingApp:
         
         self.refresh_btn = ttk.Button(status_frame, text="Aggiorna", command=self._refresh_data, state=tk.DISABLED)
         self.refresh_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Dashboard button
+        self.dashboard_btn = tk.Button(status_frame, text="Dashboard", bg='#6c757d', fg='white',
+                                       activebackground='#5a6268', command=self._show_dashboard)
+        self.dashboard_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Live mode button
+        self.live_btn = tk.Button(status_frame, text="LIVE", bg='#dc3545', fg='white',
+                                  activebackground='#c82333', command=self._toggle_live_mode)
+        self.live_btn.pack(side=tk.RIGHT, padx=5)
     
     def _create_events_panel(self, parent):
         """Create events list panel with country grouping."""
@@ -200,6 +217,16 @@ class BetfairDutchingApp:
         )
         self.refresh_prices_btn.pack(side=tk.LEFT, padx=10)
         
+        # Dutching modal button
+        self.dutch_modal_btn = tk.Button(
+            stream_frame, 
+            text="Dutching Avanzato", 
+            bg='#17a2b8', fg='white',
+            command=self._show_dutching_modal,
+            state=tk.DISABLED
+        )
+        self.dutch_modal_btn.pack(side=tk.LEFT, padx=5)
+        
         columns = ('select', 'name', 'back', 'back_size', 'lay', 'lay_size')
         self.runners_tree = ttk.Treeview(market_frame, columns=columns, show='headings', height=18)
         self.runners_tree.heading('select', text='')
@@ -225,6 +252,13 @@ class BetfairDutchingApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
         self.runners_tree.bind('<ButtonRelease-1>', self._on_runner_clicked)
+        self.runners_tree.bind('<Button-3>', self._show_runner_context_menu)  # Right-click
+        
+        # Context menu for runners
+        self.runner_context_menu = tk.Menu(self.root, tearoff=0)
+        self.runner_context_menu.add_command(label="Prenota Scommessa", command=self._book_selected_runner)
+        self.runner_context_menu.add_separator()
+        self.runner_context_menu.add_command(label="Seleziona per Dutching", command=lambda: None)
     
     def _create_dutching_panel(self, parent):
         """Create dutching calculator panel."""
@@ -673,6 +707,7 @@ class BetfairDutchingApp:
         self.current_market = market
         self.runners_tree.delete(*self.runners_tree.get_children())
         self.refresh_prices_btn.config(state=tk.NORMAL)
+        self.dutch_modal_btn.config(state=tk.NORMAL)
         
         for runner in market['runners']:
             back_price = f"{runner['backPrice']:.2f}" if runner.get('backPrice') else "-"
@@ -776,6 +811,35 @@ class BetfairDutchingApp:
                     pass
         
         self.root.after(0, update_ui)
+    
+    def _show_runner_context_menu(self, event):
+        """Show context menu on right-click."""
+        item = self.runners_tree.identify_row(event.y)
+        if item:
+            self.runners_tree.selection_set(item)
+            self._context_menu_selection = item
+            self.runner_context_menu.post(event.x_root, event.y_root)
+    
+    def _book_selected_runner(self):
+        """Book the selected runner from context menu."""
+        if not hasattr(self, '_context_menu_selection') or not self._context_menu_selection:
+            return
+        
+        selection_id = self._context_menu_selection
+        if not self.current_market:
+            return
+        
+        for runner in self.current_market['runners']:
+            if str(runner['selectionId']) == selection_id:
+                current_price = runner.get('backPrice') or runner.get('layPrice') or 0
+                if current_price > 0:
+                    self._show_booking_dialog(
+                        selection_id,
+                        runner['runnerName'],
+                        current_price,
+                        self.current_market['marketId']
+                    )
+                break
     
     def _on_runner_clicked(self, event):
         """Handle runner row click to toggle selection."""
@@ -1006,12 +1070,546 @@ class BetfairDutchingApp:
             "Funzionalita:\n"
             "- Streaming quote in tempo reale\n"
             "- Calcolo automatico stake dutching\n"
-            "- Validazione regole italiane\n\n"
+            "- Dashboard con saldo e scommesse\n"
+            "- Prenotazione quote\n"
+            "- Cashout automatico\n\n"
             "Requisiti:\n"
             "- Account Betfair Italia\n"
             "- Certificato SSL per API\n"
             "- App Key Betfair"
         )
+    
+    def _toggle_live_mode(self):
+        """Toggle live-only mode."""
+        if not self.client:
+            messagebox.showwarning("Attenzione", "Devi prima connetterti")
+            return
+        
+        self.live_mode = not self.live_mode
+        
+        if self.live_mode:
+            self.live_btn.config(bg='#28a745', text="LIVE ON")
+            self._load_live_events()
+            self._start_live_refresh()
+        else:
+            self.live_btn.config(bg='#dc3545', text="LIVE")
+            self._stop_live_refresh()
+            self._load_events()  # Load all events
+    
+    def _load_live_events(self):
+        """Load only live/in-play events."""
+        if not self.client:
+            return
+        
+        def fetch():
+            try:
+                events = self.client.get_live_events_only()
+                self.root.after(0, lambda: self._populate_events(events, live_only=True))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Errore", str(e)))
+        
+        threading.Thread(target=fetch, daemon=True).start()
+    
+    def _start_live_refresh(self):
+        """Start auto-refresh for live odds."""
+        if self.live_refresh_id:
+            self.root.after_cancel(self.live_refresh_id)
+        
+        def refresh():
+            if self.live_mode and self.current_market:
+                self._refresh_prices()
+            if self.live_mode:
+                self.live_refresh_id = self.root.after(LIVE_REFRESH_INTERVAL, refresh)
+        
+        self.live_refresh_id = self.root.after(LIVE_REFRESH_INTERVAL, refresh)
+    
+    def _stop_live_refresh(self):
+        """Stop auto-refresh for live odds."""
+        if self.live_refresh_id:
+            self.root.after_cancel(self.live_refresh_id)
+            self.live_refresh_id = None
+    
+    def _show_dashboard(self):
+        """Show dashboard with account info and bets."""
+        if not self.client:
+            messagebox.showwarning("Attenzione", "Devi prima connetterti")
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Dashboard - Account Betfair Italy")
+        dialog.geometry("800x700")
+        dialog.transient(self.root)
+        
+        main_frame = ttk.Frame(dialog, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Header
+        ttk.Label(main_frame, text="Panoramica del tuo account Betfair Italy", 
+                 style='Title.TLabel').pack(anchor=tk.W, pady=(0, 20))
+        
+        # Stats cards frame
+        stats_frame = ttk.Frame(main_frame)
+        stats_frame.pack(fill=tk.X, pady=10)
+        
+        # Create stat cards
+        def create_stat_card(parent, title, value, subtitle, col):
+            card = ttk.LabelFrame(parent, text=title, padding=10)
+            card.grid(row=0, column=col, padx=5, sticky='nsew')
+            ttk.Label(card, text=value, style='Title.TLabel').pack()
+            ttk.Label(card, text=subtitle, font=('Segoe UI', 8)).pack()
+            return card
+        
+        # Fetch account data
+        try:
+            funds = self.client.get_account_funds()
+            self.account_data = funds
+        except:
+            funds = self.account_data
+        
+        daily_pl = self.db.get_today_profit_loss()
+        active_count = self.db.get_active_bets_count()
+        
+        create_stat_card(stats_frame, "Saldo Disponibile", 
+                        f"{funds.get('available', 0):.2f} EUR", 
+                        "Fondi disponibili per scommettere", 0)
+        create_stat_card(stats_frame, "Esposizione", 
+                        f"{abs(funds.get('exposure', 0)):.2f} EUR", 
+                        "Responsabilita corrente", 1)
+        pl_text = f"+{daily_pl:.2f}" if daily_pl >= 0 else f"{daily_pl:.2f}"
+        create_stat_card(stats_frame, "P/L Oggi", 
+                        f"{pl_text} EUR", 
+                        "Profitto/Perdita giornaliero", 2)
+        create_stat_card(stats_frame, "Scommesse Attive", 
+                        str(active_count), 
+                        "In attesa di risultato", 3)
+        
+        for i in range(4):
+            stats_frame.columnconfigure(i, weight=1)
+        
+        # Refresh button
+        def refresh_dashboard():
+            try:
+                funds = self.client.get_account_funds()
+                self.account_data = funds
+                dialog.destroy()
+                self._show_dashboard()
+            except Exception as e:
+                messagebox.showerror("Errore", str(e))
+        
+        ttk.Button(main_frame, text="Aggiorna", command=refresh_dashboard).pack(anchor=tk.E, pady=10)
+        
+        # Notebook for different bet views
+        notebook = ttk.Notebook(main_frame)
+        notebook.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Recent bets tab
+        recent_frame = ttk.Frame(notebook, padding=10)
+        notebook.add(recent_frame, text="Scommesse Recenti")
+        self._create_bets_list(recent_frame, self.db.get_recent_bets(20))
+        
+        # Current orders tab (matched/unmatched)
+        orders_frame = ttk.Frame(notebook, padding=10)
+        notebook.add(orders_frame, text="Ordini Correnti")
+        self._create_current_orders_view(orders_frame)
+        
+        # Bookings tab
+        bookings_frame = ttk.Frame(notebook, padding=10)
+        notebook.add(bookings_frame, text="Prenotazioni")
+        self._create_bookings_view(bookings_frame)
+    
+    def _create_bets_list(self, parent, bets):
+        """Create a list view of bets."""
+        columns = ('data', 'evento', 'mercato', 'tipo', 'stake', 'stato')
+        tree = ttk.Treeview(parent, columns=columns, show='headings', height=12)
+        tree.heading('data', text='Data')
+        tree.heading('evento', text='Evento')
+        tree.heading('mercato', text='Mercato')
+        tree.heading('tipo', text='Tipo')
+        tree.heading('stake', text='Stake')
+        tree.heading('stato', text='Stato')
+        tree.column('data', width=100)
+        tree.column('evento', width=150)
+        tree.column('mercato', width=120)
+        tree.column('tipo', width=60)
+        tree.column('stake', width=80)
+        tree.column('stato', width=80)
+        
+        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        for bet in bets:
+            placed_at = bet.get('placed_at', '')[:16] if bet.get('placed_at') else ''
+            tree.insert('', tk.END, values=(
+                placed_at,
+                bet.get('event_name', '')[:25],
+                bet.get('market_name', '')[:20],
+                bet.get('side', bet.get('bet_type', '')),
+                f"{bet.get('stake', bet.get('total_stake', 0)):.2f}",
+                bet.get('status', '')
+            ))
+    
+    def _create_current_orders_view(self, parent):
+        """Create view for current orders from Betfair."""
+        if not self.client:
+            ttk.Label(parent, text="Non connesso").pack()
+            return
+        
+        # Tabs for matched/unmatched
+        sub_notebook = ttk.Notebook(parent)
+        sub_notebook.pack(fill=tk.BOTH, expand=True)
+        
+        try:
+            orders = self.client.get_current_orders()
+        except:
+            orders = {'matched': [], 'unmatched': [], 'partiallyMatched': []}
+        
+        # Matched
+        matched_frame = ttk.Frame(sub_notebook, padding=5)
+        sub_notebook.add(matched_frame, text=f"Abbinate ({len(orders['matched'])})")
+        self._create_orders_list(matched_frame, orders['matched'])
+        
+        # Unmatched
+        unmatched_frame = ttk.Frame(sub_notebook, padding=5)
+        sub_notebook.add(unmatched_frame, text=f"Non Abbinate ({len(orders['unmatched'])})")
+        self._create_orders_list(unmatched_frame, orders['unmatched'], show_cancel=True)
+        
+        # Partially matched
+        partial_frame = ttk.Frame(sub_notebook, padding=5)
+        sub_notebook.add(partial_frame, text=f"Parziali ({len(orders['partiallyMatched'])})")
+        self._create_orders_list(partial_frame, orders['partiallyMatched'])
+    
+    def _create_orders_list(self, parent, orders, show_cancel=False):
+        """Create list of orders."""
+        columns = ('mercato', 'tipo', 'quota', 'stake', 'abbinato')
+        tree = ttk.Treeview(parent, columns=columns, show='headings', height=8)
+        tree.heading('mercato', text='Mercato')
+        tree.heading('tipo', text='Tipo')
+        tree.heading('quota', text='Quota')
+        tree.heading('stake', text='Stake')
+        tree.heading('abbinato', text='Abbinato')
+        
+        tree.pack(fill=tk.BOTH, expand=True)
+        
+        for order in orders:
+            tree.insert('', tk.END, iid=order.get('betId'), values=(
+                order.get('marketId', '')[:15],
+                order.get('side', ''),
+                f"{order.get('price', 0):.2f}",
+                f"{order.get('size', 0):.2f}",
+                f"{order.get('sizeMatched', 0):.2f}"
+            ))
+        
+        if show_cancel and orders:
+            def cancel_selected():
+                selected = tree.selection()
+                if selected and self.client:
+                    for bet_id in selected:
+                        item = tree.item(bet_id)
+                        market_id = item['values'][0] if item['values'] else None
+                        if market_id:
+                            try:
+                                self.client.cancel_orders(market_id, [bet_id])
+                            except:
+                                pass
+                    messagebox.showinfo("Info", "Ordini cancellati")
+            
+            ttk.Button(parent, text="Cancella Selezionati", command=cancel_selected).pack(pady=5)
+    
+    def _create_bookings_view(self, parent):
+        """Create view for bet bookings."""
+        bookings = self.db.get_pending_bookings()
+        
+        columns = ('runner', 'quota_target', 'stake', 'tipo', 'stato')
+        tree = ttk.Treeview(parent, columns=columns, show='headings', height=8)
+        tree.heading('runner', text='Selezione')
+        tree.heading('quota_target', text='Quota Target')
+        tree.heading('stake', text='Stake')
+        tree.heading('tipo', text='Tipo')
+        tree.heading('stato', text='Stato')
+        
+        tree.pack(fill=tk.BOTH, expand=True)
+        
+        for booking in bookings:
+            tree.insert('', tk.END, iid=str(booking['id']), values=(
+                booking.get('runner_name', '')[:20],
+                f"{booking.get('target_price', 0):.2f}",
+                f"{booking.get('stake', 0):.2f}",
+                booking.get('side', ''),
+                booking.get('status', '')
+            ))
+        
+        def cancel_booking():
+            selected = tree.selection()
+            for bid in selected:
+                self.db.cancel_booking(int(bid))
+            messagebox.showinfo("Info", "Prenotazioni cancellate")
+            # Refresh
+            for item in tree.get_children():
+                tree.delete(item)
+            for booking in self.db.get_pending_bookings():
+                tree.insert('', tk.END, iid=str(booking['id']), values=(
+                    booking.get('runner_name', '')[:20],
+                    f"{booking.get('target_price', 0):.2f}",
+                    f"{booking.get('stake', 0):.2f}",
+                    booking.get('side', ''),
+                    booking.get('status', '')
+                ))
+        
+        ttk.Button(parent, text="Cancella Prenotazione", command=cancel_booking).pack(pady=5)
+        ttk.Label(parent, text="Le prenotazioni verranno attivate quando la quota raggiunge il target").pack()
+    
+    def _start_booking_monitor(self):
+        """Start monitoring bookings for price triggers."""
+        def monitor():
+            if self.client and self.pending_bookings:
+                self._check_booking_triggers()
+            self.booking_monitor_id = self.root.after(10000, monitor)  # Check every 10 seconds
+        
+        self.booking_monitor_id = self.root.after(10000, monitor)
+    
+    def _check_booking_triggers(self):
+        """Check if any booking should be triggered."""
+        bookings = self.db.get_pending_bookings()
+        self.pending_bookings = bookings
+        
+        for booking in bookings:
+            try:
+                # Fetch current price
+                market = self.client.get_market_with_prices(booking['market_id'])
+                for runner in market['runners']:
+                    if runner['selectionId'] == booking['selection_id']:
+                        current_price = runner['backPrice'] if booking['side'] == 'BACK' else runner['layPrice']
+                        
+                        # Check if target reached
+                        should_trigger = False
+                        if booking['side'] == 'BACK' and current_price and current_price >= booking['target_price']:
+                            should_trigger = True
+                        elif booking['side'] == 'LAY' and current_price and current_price <= booking['target_price']:
+                            should_trigger = True
+                        
+                        if should_trigger:
+                            # Place the bet
+                            result = self.client.place_bets(booking['market_id'], [{
+                                'selectionId': booking['selection_id'],
+                                'side': booking['side'],
+                                'price': current_price,
+                                'size': booking['stake']
+                            }])
+                            
+                            if result['status'] == 'SUCCESS':
+                                bet_id = result['instructionReports'][0].get('betId') if result['instructionReports'] else None
+                                self.db.update_booking_status(booking['id'], 'TRIGGERED', bet_id)
+                            else:
+                                self.db.update_booking_status(booking['id'], 'FAILED')
+                        break
+            except:
+                pass
+    
+    def _show_booking_dialog(self, selection_id, runner_name, current_price, market_id):
+        """Show dialog to create a bet booking."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Prenota Scommessa - {runner_name}")
+        dialog.geometry("400x300")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text=f"Selezione: {runner_name}", style='Header.TLabel').pack(anchor=tk.W)
+        ttk.Label(frame, text=f"Quota Attuale: {current_price:.2f}").pack(anchor=tk.W, pady=5)
+        
+        ttk.Label(frame, text="Tipo:").pack(anchor=tk.W, pady=(10, 0))
+        side_var = tk.StringVar(value='BACK')
+        side_frame = ttk.Frame(frame)
+        side_frame.pack(fill=tk.X)
+        ttk.Radiobutton(side_frame, text="Back", variable=side_var, value='BACK').pack(side=tk.LEFT)
+        ttk.Radiobutton(side_frame, text="Lay", variable=side_var, value='LAY').pack(side=tk.LEFT, padx=10)
+        
+        ttk.Label(frame, text="Quota Target:").pack(anchor=tk.W, pady=(10, 0))
+        target_var = tk.StringVar(value=str(current_price + 0.25))
+        ttk.Entry(frame, textvariable=target_var, width=10).pack(anchor=tk.W)
+        
+        ttk.Label(frame, text="Stake (EUR):").pack(anchor=tk.W, pady=(10, 0))
+        stake_var = tk.StringVar(value='10.00')
+        ttk.Entry(frame, textvariable=stake_var, width=10).pack(anchor=tk.W)
+        
+        def save_booking():
+            try:
+                target = float(target_var.get().replace(',', '.'))
+                stake = float(stake_var.get().replace(',', '.'))
+                
+                if stake < 2.0 and side_var.get() == 'BACK':
+                    messagebox.showerror("Errore", "Stake minimo BACK: 2.00 EUR")
+                    return
+                
+                self.db.save_booking(
+                    self.current_event['name'] if self.current_event else '',
+                    market_id,
+                    self.current_market['marketName'] if self.current_market else '',
+                    int(selection_id),
+                    runner_name,
+                    side_var.get(),
+                    target,
+                    stake,
+                    current_price
+                )
+                
+                messagebox.showinfo("Successo", f"Prenotazione salvata!\nQuando la quota raggiunge {target:.2f}, la scommessa verra piazzata automaticamente.")
+                dialog.destroy()
+            except ValueError:
+                messagebox.showerror("Errore", "Valori non validi")
+        
+        ttk.Button(frame, text="Prenota", command=save_booking).pack(pady=20)
+    
+    def _show_dutching_modal(self):
+        """Show dutching modal for multiple selection with stake/profit options."""
+        if not self.current_market:
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Dutching - {self.current_market.get('marketName', '')}")
+        dialog.geometry("700x600")
+        dialog.transient(self.root)
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Bet type selection
+        type_frame = ttk.Frame(frame)
+        type_frame.pack(fill=tk.X, pady=10)
+        
+        modal_bet_type = tk.StringVar(value='BACK')
+        
+        back_btn = tk.Button(type_frame, text="Dutching BACK", bg='#3498db', fg='white',
+                            command=lambda: modal_bet_type.set('BACK'))
+        back_btn.pack(side=tk.LEFT, padx=5)
+        
+        lay_btn = tk.Button(type_frame, text="Dutching LAY", bg='#ffb6c1', fg='#333',
+                           command=lambda: modal_bet_type.set('LAY'))
+        lay_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Selection mode
+        mode_frame = ttk.Frame(frame)
+        mode_frame.pack(fill=tk.X, pady=10)
+        
+        mode_var = tk.StringVar(value='STAKE')
+        ttk.Radiobutton(mode_frame, text="Stake Fisso", variable=mode_var, value='STAKE').pack(side=tk.LEFT)
+        ttk.Radiobutton(mode_frame, text="Profitto Target", variable=mode_var, value='PROFIT').pack(side=tk.LEFT, padx=10)
+        
+        # Amount entry
+        amount_frame = ttk.Frame(frame)
+        amount_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(amount_frame, text="Importo (EUR):").pack(side=tk.LEFT)
+        amount_var = tk.StringVar(value='10.00')
+        ttk.Entry(amount_frame, textvariable=amount_var, width=10).pack(side=tk.LEFT, padx=5)
+        
+        # Runners selection
+        ttk.Label(frame, text="Seleziona Esiti:", style='Header.TLabel').pack(anchor=tk.W, pady=(10, 5))
+        
+        runners_frame = ttk.Frame(frame)
+        runners_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Checkboxes for each runner
+        runner_vars = {}
+        canvas = tk.Canvas(runners_frame, height=300)
+        scrollbar = ttk.Scrollbar(runners_frame, orient=tk.VERTICAL, command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        for runner in self.current_market.get('runners', []):
+            var = tk.BooleanVar(value=False)
+            runner_vars[runner['selectionId']] = (var, runner)
+            
+            r_frame = ttk.Frame(scrollable_frame)
+            r_frame.pack(fill=tk.X, pady=2)
+            
+            ttk.Checkbutton(r_frame, variable=var).pack(side=tk.LEFT)
+            ttk.Label(r_frame, text=runner['runnerName'], width=20).pack(side=tk.LEFT)
+            
+            back_p = f"{runner.get('backPrice', 0):.2f}" if runner.get('backPrice') else '-'
+            lay_p = f"{runner.get('layPrice', 0):.2f}" if runner.get('layPrice') else '-'
+            ttk.Label(r_frame, text=f"Back: {back_p}", width=10).pack(side=tk.LEFT)
+            ttk.Label(r_frame, text=f"Lay: {lay_p}", width=10).pack(side=tk.LEFT)
+        
+        # Calculate button
+        result_text = scrolledtext.ScrolledText(frame, height=6, width=60)
+        result_text.pack(fill=tk.X, pady=10)
+        
+        def calculate_modal():
+            selections = []
+            bet_type = modal_bet_type.get()
+            
+            for sel_id, (var, runner) in runner_vars.items():
+                if var.get():
+                    sel = runner.copy()
+                    sel['price'] = runner.get('backPrice', 0) if bet_type == 'BACK' else runner.get('layPrice', 0)
+                    if sel['price'] and sel['price'] > 1:
+                        selections.append(sel)
+            
+            if not selections:
+                result_text.delete('1.0', tk.END)
+                result_text.insert('1.0', "Seleziona almeno un esito")
+                return
+            
+            try:
+                amount = float(amount_var.get().replace(',', '.'))
+                results, profit, implied = calculate_dutching_stakes(selections, amount, bet_type)
+                
+                text = f"Tipo: {bet_type} | Profitto: {format_currency(profit)} | Prob: {implied:.1f}%\n\n"
+                for r in results:
+                    text += f"{r['runnerName']}: Stake {format_currency(r['stake'])} @ {r['price']:.2f}\n"
+                
+                result_text.delete('1.0', tk.END)
+                result_text.insert('1.0', text)
+                
+                dialog.calculated_results = results
+                dialog.bet_type = bet_type
+            except Exception as e:
+                result_text.delete('1.0', tk.END)
+                result_text.insert('1.0', f"Errore: {e}")
+        
+        def place_modal_bets():
+            if not hasattr(dialog, 'calculated_results'):
+                return
+            
+            if not messagebox.askyesno("Conferma", "Piazzare le scommesse?"):
+                return
+            
+            bet_type = dialog.bet_type
+            instructions = []
+            for r in dialog.calculated_results:
+                instructions.append({
+                    'selectionId': r['selectionId'],
+                    'side': bet_type,
+                    'price': r['price'],
+                    'size': r['stake']
+                })
+            
+            try:
+                result = self.client.place_bets(self.current_market['marketId'], instructions)
+                if result['status'] == 'SUCCESS':
+                    messagebox.showinfo("Successo", "Scommesse piazzate!")
+                    dialog.destroy()
+                else:
+                    messagebox.showwarning("Attenzione", f"Stato: {result['status']}")
+            except Exception as e:
+                messagebox.showerror("Errore", str(e))
+        
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=10)
+        ttk.Button(btn_frame, text="Calcola", command=calculate_modal).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Piazza Scommesse", command=place_modal_bets).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Chiudi", command=dialog.destroy).pack(side=tk.RIGHT)
     
     def run(self):
         """Start the application."""

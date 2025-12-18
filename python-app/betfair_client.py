@@ -543,3 +543,158 @@ class BetfairClient:
                 for ir in result.instruction_reports
             ] if result.instruction_reports else []
         }
+    
+    def get_current_orders(self, market_ids=None):
+        """Get current unmatched and partially matched orders."""
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        order_filter = {}
+        if market_ids:
+            order_filter['market_ids'] = market_ids
+        
+        orders = self.client.betting.list_current_orders(**order_filter)
+        
+        result = {
+            'matched': [],
+            'unmatched': [],
+            'partiallyMatched': []
+        }
+        
+        for order in orders.orders if orders.orders else []:
+            order_data = {
+                'betId': order.bet_id,
+                'marketId': order.market_id,
+                'selectionId': order.selection_id,
+                'side': order.side,
+                'price': order.price_size.price if order.price_size else None,
+                'size': order.price_size.size if order.price_size else None,
+                'sizeMatched': order.size_matched,
+                'sizeRemaining': order.size_remaining,
+                'averagePriceMatched': order.average_price_matched,
+                'status': order.status,
+                'placedDate': order.placed_date.isoformat() if order.placed_date else None
+            }
+            
+            if order.size_remaining == 0 and order.size_matched > 0:
+                result['matched'].append(order_data)
+            elif order.size_remaining > 0 and order.size_matched > 0:
+                result['partiallyMatched'].append(order_data)
+            elif order.size_remaining > 0:
+                result['unmatched'].append(order_data)
+        
+        return result
+    
+    def cancel_orders(self, market_id, bet_ids=None):
+        """Cancel unmatched orders."""
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        instructions = []
+        if bet_ids:
+            for bet_id in bet_ids:
+                instructions.append(
+                    betfairlightweight.filters.cancel_instruction(bet_id=bet_id)
+                )
+        
+        result = self.client.betting.cancel_orders(
+            market_id=market_id,
+            instructions=instructions if instructions else None
+        )
+        
+        return {
+            'status': result.status,
+            'instructionReports': [
+                {
+                    'status': ir.status,
+                    'sizeCancelled': ir.size_cancelled if hasattr(ir, 'size_cancelled') else 0
+                }
+                for ir in result.instruction_reports
+            ] if result.instruction_reports else []
+        }
+    
+    def get_market_profit_and_loss(self, market_ids):
+        """Get profit/loss for markets (for cashout calculation)."""
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        result = self.client.betting.list_market_profit_and_loss(
+            market_ids=market_ids,
+            include_settled_bets=False,
+            include_bsp_bets=False
+        )
+        
+        market_pnl = {}
+        for market in result:
+            runners_pnl = []
+            for runner in market.profit_and_losses if market.profit_and_losses else []:
+                runners_pnl.append({
+                    'selectionId': runner.selection_id,
+                    'ifWin': runner.if_win,
+                    'ifLose': runner.if_lose if hasattr(runner, 'if_lose') else None
+                })
+            market_pnl[market.market_id] = runners_pnl
+        
+        return market_pnl
+    
+    def get_live_events_only(self):
+        """Get only in-play football events."""
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        inplay_events = self.client.betting.list_events(
+            filter=filters.market_filter(
+                event_type_ids=[FOOTBALL_ID],
+                in_play_only=True
+            )
+        )
+        
+        result = []
+        for event in inplay_events:
+            result.append({
+                'id': event.event.id,
+                'name': event.event.name,
+                'countryCode': event.event.country_code,
+                'openDate': event.event.open_date.isoformat() if event.event.open_date else None,
+                'marketCount': event.market_count,
+                'inPlay': True
+            })
+        
+        return result
+    
+    def get_live_markets(self, event_id=None):
+        """Get all in-play markets, optionally filtered by event."""
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        market_filter_params = {
+            'event_type_ids': [FOOTBALL_ID],
+            'in_play_only': True
+        }
+        if event_id:
+            market_filter_params['event_ids'] = [event_id]
+        
+        markets = self.client.betting.list_market_catalogue(
+            filter=filters.market_filter(**market_filter_params),
+            market_projection=['RUNNER_DESCRIPTION', 'MARKET_START_TIME', 'EVENT'],
+            max_results=100
+        )
+        
+        result = []
+        for market in markets:
+            market_type = market.market_type if hasattr(market, 'market_type') else None
+            display_name = MARKET_TYPES.get(market_type, market.market_name)
+            event_name = market.event.name if hasattr(market, 'event') and market.event else ''
+            
+            result.append({
+                'marketId': market.market_id,
+                'marketName': market.market_name,
+                'marketType': market_type,
+                'displayName': display_name,
+                'eventId': market.event.id if hasattr(market, 'event') and market.event else None,
+                'eventName': event_name,
+                'startTime': market.market_start_time.isoformat() if market.market_start_time else None,
+                'inPlay': True
+            })
+        
+        return result
