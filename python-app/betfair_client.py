@@ -133,13 +133,31 @@ class BetfairClient:
             
             self.client.login()
             
+            if not self.client.session_token:
+                raise Exception("Nessun token ricevuto - verifica credenziali")
+            
             return {
                 'session_token': self.client.session_token,
                 'expiry': (datetime.now() + timedelta(hours=8)).isoformat()
             }
+        except betfairlightweight.exceptions.LoginError as e:
+            self._cleanup_temp_files()
+            raise Exception(f"Credenziali errate o account bloccato: {str(e)}")
+        except betfairlightweight.exceptions.CertsError as e:
+            self._cleanup_temp_files()
+            raise Exception(f"Errore certificato SSL - verifica che .crt e .key siano corretti: {str(e)}")
+        except betfairlightweight.exceptions.APIError as e:
+            self._cleanup_temp_files()
+            raise Exception(f"Errore API Betfair: {str(e)}")
         except Exception as e:
             self._cleanup_temp_files()
-            raise Exception(f"Login fallito: {str(e)}")
+            error_msg = str(e)
+            if "SSL" in error_msg.upper() or "CERTIFICATE" in error_msg.upper():
+                raise Exception(f"Errore SSL - il certificato potrebbe non essere valido: {error_msg}")
+            elif "timeout" in error_msg.lower():
+                raise Exception("Timeout connessione - riprova")
+            else:
+                raise Exception(f"Login fallito: {error_msg}")
     
     def logout(self):
         """Logout from Betfair and stop streaming."""

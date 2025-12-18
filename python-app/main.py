@@ -312,7 +312,12 @@ class BetfairDutchingApp:
             cert_text.insert('1.0', settings['certificate'])
         
         def load_cert():
-            path = filedialog.askopenfilename(filetypes=[("PEM files", "*.pem"), ("All files", "*.*")])
+            path = filedialog.askopenfilename(filetypes=[
+                ("Certificati", "*.pem *.crt *.cer"),
+                ("PEM files", "*.pem"),
+                ("CRT files", "*.crt"),
+                ("All files", "*.*")
+            ])
             if path:
                 with open(path, 'r') as f:
                     cert_text.delete('1.0', tk.END)
@@ -320,14 +325,19 @@ class BetfairDutchingApp:
         
         ttk.Button(frame, text="Carica da file...", command=load_cert).pack(anchor=tk.W, pady=(0, 10))
         
-        ttk.Label(frame, text="Chiave Privata (.pem):").pack(anchor=tk.W)
+        ttk.Label(frame, text="Chiave Privata (.key o .pem):").pack(anchor=tk.W)
         key_text = scrolledtext.ScrolledText(frame, height=6, width=50)
         key_text.pack(fill=tk.X, pady=(0, 5))
         if settings.get('private_key'):
             key_text.insert('1.0', settings['private_key'])
         
         def load_key():
-            path = filedialog.askopenfilename(filetypes=[("PEM files", "*.pem"), ("All files", "*.*")])
+            path = filedialog.askopenfilename(filetypes=[
+                ("Chiavi private", "*.pem *.key"),
+                ("PEM files", "*.pem"),
+                ("KEY files", "*.key"),
+                ("All files", "*.*")
+            ])
             if path:
                 with open(path, 'r') as f:
                     key_text.delete('1.0', tk.END)
