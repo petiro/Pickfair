@@ -16,7 +16,7 @@ from dutching import calculate_dutching_stakes, validate_selections, format_curr
 from telegram_listener import TelegramListener, SignalQueue
 
 APP_NAME = "Pickfair"
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.2.0"
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 LIVE_REFRESH_INTERVAL = 5000  # 5 seconds for live odds
@@ -88,6 +88,11 @@ class PickfairApp:
         file_menu.add_command(label="Configura Credenziali", command=self._show_credentials_dialog)
         file_menu.add_separator()
         file_menu.add_command(label="Esci", command=self._on_close)
+        
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Strumenti", menu=tools_menu)
+        tools_menu.add_command(label="Multi-Market Monitor", command=self._show_multi_market_monitor)
+        tools_menu.add_command(label="Filtri Avanzati", command=self._show_advanced_filters)
         
         telegram_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Telegram", menu=telegram_menu)
@@ -2298,6 +2303,338 @@ class PickfairApp:
             messagebox.showinfo("Segnale Telegram", msg)
         else:
             pass
+    
+    def _show_multi_market_monitor(self):
+        """Show multi-market monitor window."""
+        if not self.client:
+            messagebox.showwarning("Attenzione", "Connettiti prima a Betfair")
+            return
+        
+        monitor = tk.Toplevel(self.root)
+        monitor.title("Multi-Market Monitor")
+        monitor.geometry("1000x600")
+        monitor.transient(self.root)
+        
+        # Initialize watchlist
+        if not hasattr(self, 'watchlist'):
+            self.watchlist = []
+        
+        main_frame = ttk.Frame(monitor, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Top controls
+        control_frame = ttk.Frame(main_frame)
+        control_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(control_frame, text="Aggiungi mercato corrente alla watchlist:").pack(side=tk.LEFT)
+        
+        def add_current_market():
+            if self.current_market and self.current_event:
+                market_info = {
+                    'event_id': self.current_event['id'],
+                    'event_name': self.current_event['name'],
+                    'market_id': self.current_market['marketId'],
+                    'market_name': self.current_market.get('marketName', 'N/A'),
+                    'runners': self.current_market.get('runners', [])
+                }
+                # Check if already in watchlist
+                for m in self.watchlist:
+                    if m['market_id'] == market_info['market_id']:
+                        messagebox.showinfo("Info", "Mercato già nella watchlist")
+                        return
+                self.watchlist.append(market_info)
+                refresh_watchlist()
+                messagebox.showinfo("Aggiunto", f"Aggiunto: {market_info['event_name']}")
+            else:
+                messagebox.showwarning("Attenzione", "Seleziona prima un mercato")
+        
+        ttk.Button(control_frame, text="+ Aggiungi Corrente", command=add_current_market).pack(side=tk.LEFT, padx=10)
+        
+        # Auto-refresh toggle
+        monitor_refresh_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(control_frame, text="Auto-refresh (30s)", variable=monitor_refresh_var).pack(side=tk.LEFT, padx=10)
+        
+        def remove_selected():
+            selection = watchlist_tree.selection()
+            if selection:
+                idx = watchlist_tree.index(selection[0])
+                if 0 <= idx < len(self.watchlist):
+                    del self.watchlist[idx]
+                    refresh_watchlist()
+        
+        ttk.Button(control_frame, text="Rimuovi Selezionato", command=remove_selected).pack(side=tk.RIGHT)
+        
+        # Watchlist treeview
+        columns = ('event', 'market', 'runner1', 'back1', 'lay1', 'runner2', 'back2', 'lay2', 'runner3', 'back3', 'lay3')
+        watchlist_tree = ttk.Treeview(main_frame, columns=columns, show='headings', height=20)
+        
+        watchlist_tree.heading('event', text='Evento')
+        watchlist_tree.heading('market', text='Mercato')
+        watchlist_tree.heading('runner1', text='Sel 1')
+        watchlist_tree.heading('back1', text='Back')
+        watchlist_tree.heading('lay1', text='Lay')
+        watchlist_tree.heading('runner2', text='Sel 2')
+        watchlist_tree.heading('back2', text='Back')
+        watchlist_tree.heading('lay2', text='Lay')
+        watchlist_tree.heading('runner3', text='Sel 3')
+        watchlist_tree.heading('back3', text='Back')
+        watchlist_tree.heading('lay3', text='Lay')
+        
+        watchlist_tree.column('event', width=150)
+        watchlist_tree.column('market', width=100)
+        for col in ['runner1', 'runner2', 'runner3']:
+            watchlist_tree.column(col, width=80)
+        for col in ['back1', 'lay1', 'back2', 'lay2', 'back3', 'lay3']:
+            watchlist_tree.column(col, width=50)
+        
+        scrollbar = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=watchlist_tree.yview)
+        watchlist_tree.configure(yscrollcommand=scrollbar.set)
+        
+        watchlist_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        def refresh_watchlist():
+            watchlist_tree.delete(*watchlist_tree.get_children())
+            for item in self.watchlist:
+                runners = item.get('runners', [])[:3]
+                values = [item['event_name'][:20], item['market_name'][:15]]
+                for r in runners:
+                    values.append(r.get('runnerName', 'N/A')[:10])
+                    values.append(r.get('backPrice', '-'))
+                    values.append(r.get('layPrice', '-'))
+                # Pad if less than 3 runners
+                while len(values) < 11:
+                    values.append('-')
+                watchlist_tree.insert('', tk.END, values=values)
+        
+        def update_prices():
+            if not monitor.winfo_exists():
+                return
+            
+            def fetch_all():
+                updated = []
+                for item in self.watchlist:
+                    try:
+                        book = self.client.get_market_book(item['market_id'])
+                        if book and book.get('runners'):
+                            runners = []
+                            for r in book['runners'][:3]:
+                                runner_info = {
+                                    'runnerName': next((x.get('runnerName') for x in item['runners'] 
+                                                       if x.get('selectionId') == r.get('selectionId')), 'N/A'),
+                                    'backPrice': r.get('ex', {}).get('availableToBack', [{}])[0].get('price', '-') if r.get('ex', {}).get('availableToBack') else '-',
+                                    'layPrice': r.get('ex', {}).get('availableToLay', [{}])[0].get('price', '-') if r.get('ex', {}).get('availableToLay') else '-'
+                                }
+                                runners.append(runner_info)
+                            item['runners'] = runners
+                        updated.append(item)
+                    except Exception as e:
+                        print(f"Error updating {item['market_id']}: {e}")
+                        updated.append(item)
+                return updated
+            
+            def on_complete(updated):
+                self.watchlist = updated
+                refresh_watchlist()
+                if monitor.winfo_exists() and monitor_refresh_var.get():
+                    monitor.after(30000, update_prices)
+            
+            def thread_func():
+                result = fetch_all()
+                if monitor.winfo_exists():
+                    monitor.after(0, lambda: on_complete(result))
+            
+            threading.Thread(target=thread_func, daemon=True).start()
+        
+        refresh_watchlist()
+        update_prices()
+        
+        # Status bar
+        status = ttk.Label(main_frame, text=f"Mercati monitorati: {len(self.watchlist)}")
+        status.pack(side=tk.BOTTOM, pady=5)
+    
+    def _show_advanced_filters(self):
+        """Show advanced filters dialog."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Filtri Avanzati")
+        dialog.geometry("400x450")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="Filtri Avanzati Eventi", style='Title.TLabel').pack(pady=(0, 15))
+        
+        # Initialize filter vars if not exists
+        if not hasattr(self, 'filter_settings'):
+            self.filter_settings = {
+                'competitions': [],
+                'time_filter': 'all',
+                'min_odds': 1.01,
+                'max_odds': 1000,
+                'only_live': False
+            }
+        
+        # Competition filter
+        ttk.Label(frame, text="Campionati (separati da virgola):").pack(anchor=tk.W)
+        comp_var = tk.StringVar(value=','.join(self.filter_settings.get('competitions', [])))
+        ttk.Entry(frame, textvariable=comp_var, width=40).pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(frame, text="Es: Serie A, Premier League, La Liga", 
+                  font=('Segoe UI', 8), foreground='gray').pack(anchor=tk.W)
+        
+        # Time filter
+        ttk.Label(frame, text="Periodo:").pack(anchor=tk.W, pady=(10, 0))
+        time_var = tk.StringVar(value=self.filter_settings.get('time_filter', 'all'))
+        time_frame = ttk.Frame(frame)
+        time_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Radiobutton(time_frame, text="Tutti", variable=time_var, value='all').pack(side=tk.LEFT)
+        ttk.Radiobutton(time_frame, text="Oggi", variable=time_var, value='today').pack(side=tk.LEFT, padx=10)
+        ttk.Radiobutton(time_frame, text="24 ore", variable=time_var, value='24h').pack(side=tk.LEFT, padx=10)
+        ttk.Radiobutton(time_frame, text="48 ore", variable=time_var, value='48h').pack(side=tk.LEFT, padx=10)
+        
+        # Odds range
+        ttk.Label(frame, text="Range Quote:").pack(anchor=tk.W, pady=(15, 0))
+        odds_frame = ttk.Frame(frame)
+        odds_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(odds_frame, text="Min:").pack(side=tk.LEFT)
+        min_odds_var = tk.StringVar(value=str(self.filter_settings.get('min_odds', 1.01)))
+        ttk.Entry(odds_frame, textvariable=min_odds_var, width=8).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(odds_frame, text="Max:").pack(side=tk.LEFT, padx=(20, 0))
+        max_odds_var = tk.StringVar(value=str(self.filter_settings.get('max_odds', 1000)))
+        ttk.Entry(odds_frame, textvariable=max_odds_var, width=8).pack(side=tk.LEFT, padx=5)
+        
+        # Live only
+        live_var = tk.BooleanVar(value=self.filter_settings.get('only_live', False))
+        ttk.Checkbutton(frame, text="Solo partite LIVE", variable=live_var).pack(anchor=tk.W, pady=15)
+        
+        # Apply button
+        def apply_filters():
+            try:
+                min_odds = float(min_odds_var.get())
+                max_odds = float(max_odds_var.get())
+            except ValueError:
+                messagebox.showerror("Errore", "Quote min/max devono essere numeri")
+                return
+            
+            comps = [c.strip() for c in comp_var.get().split(',') if c.strip()]
+            
+            self.filter_settings = {
+                'competitions': comps,
+                'time_filter': time_var.get(),
+                'min_odds': min_odds,
+                'max_odds': max_odds,
+                'only_live': live_var.get()
+            }
+            
+            self._apply_filters_to_events()
+            dialog.destroy()
+            messagebox.showinfo("Filtri Applicati", "I filtri sono stati applicati alla lista eventi")
+        
+        def reset_filters():
+            self.filter_settings = {
+                'competitions': [],
+                'time_filter': 'all',
+                'min_odds': 1.01,
+                'max_odds': 1000,
+                'only_live': False
+            }
+            self._apply_filters_to_events()
+            dialog.destroy()
+            messagebox.showinfo("Filtri Reset", "I filtri sono stati rimossi")
+        
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(pady=20)
+        
+        ttk.Button(btn_frame, text="Applica Filtri", command=apply_filters).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Reset", command=reset_filters).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Annulla", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+    
+    def _apply_filters_to_events(self):
+        """Apply advanced filters to events list."""
+        if not hasattr(self, 'all_events') or not self.all_events:
+            return
+        
+        filters = getattr(self, 'filter_settings', {})
+        
+        filtered = []
+        now = datetime.now()
+        
+        for event in self.all_events:
+            # Competition filter
+            if filters.get('competitions'):
+                event_name = event.get('name', '').lower()
+                comp_match = any(comp.lower() in event_name for comp in filters['competitions'])
+                country = event.get('countryCode', '')
+                comp_match = comp_match or any(comp.lower() in country.lower() for comp in filters['competitions'])
+                if not comp_match:
+                    continue
+            
+            # Time filter
+            time_filter = filters.get('time_filter', 'all')
+            if time_filter != 'all' and event.get('openDate'):
+                try:
+                    event_time = datetime.fromisoformat(event['openDate'].replace('Z', '+00:00')).replace(tzinfo=None)
+                    if time_filter == 'today':
+                        if event_time.date() != now.date():
+                            continue
+                    elif time_filter == '24h':
+                        if (event_time - now).total_seconds() > 86400:
+                            continue
+                    elif time_filter == '48h':
+                        if (event_time - now).total_seconds() > 172800:
+                            continue
+                except:
+                    pass
+            
+            # Live only filter
+            if filters.get('only_live') and not event.get('inPlay'):
+                continue
+            
+            filtered.append(event)
+        
+        # Update display with filtered events
+        self.filtered_events = filtered
+        self._populate_events_tree_filtered()
+    
+    def _populate_events_tree_filtered(self):
+        """Populate events tree with filtered events."""
+        events = getattr(self, 'filtered_events', self.all_events)
+        if not events:
+            events = self.all_events
+        
+        self.events_tree.delete(*self.events_tree.get_children())
+        search = self.search_var.get().lower()
+        
+        if search:
+            for event in events:
+                if search in event['name'].lower():
+                    date_str = self._format_event_date(event)
+                    self.events_tree.insert('', tk.END, iid=event['id'], text=event.get('countryCode', ''), values=(
+                        event['name'],
+                        date_str
+                    ))
+        else:
+            countries = {}
+            for event in events:
+                country = event.get('countryCode', 'XX') or 'XX'
+                if country not in countries:
+                    countries[country] = []
+                countries[country].append(event)
+            
+            for country in sorted(countries.keys()):
+                country_id = f"country_{country}"
+                self.events_tree.insert('', tk.END, iid=country_id, text=country, open=False)
+                
+                for event in countries[country]:
+                    date_str = self._format_event_date(event)
+                    self.events_tree.insert(country_id, tk.END, iid=event['id'], values=(
+                        event['name'],
+                        date_str
+                    ))
     
     def run(self):
         """Start the application."""
