@@ -15,14 +15,14 @@ from betfair_client import BetfairClient, MARKET_TYPES
 from dutching import calculate_dutching_stakes, validate_selections, format_currency
 from telegram_listener import TelegramListener, SignalQueue
 
-APP_NAME = "Betfair Dutching"
+APP_NAME = "Pickfair"
 APP_VERSION = "3.0.0"
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 LIVE_REFRESH_INTERVAL = 5000  # 5 seconds for live odds
 
 
-class BetfairDutchingApp:
+class PickfairApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
@@ -2246,7 +2246,7 @@ class BetfairDutchingApp:
 
 
 def main():
-    app = BetfairDutchingApp()
+    app = PickfairApp()
     app.run()
 
 

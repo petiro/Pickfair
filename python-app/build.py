@@ -17,7 +17,7 @@ def build():
     # PyInstaller arguments
     args = [
         main_script,
-        "--name=BetfairDutching",
+        "--name=Pickfair",
         "--onefile",  # Single executable
         "--windowed",  # No console window
         "--clean",  # Clean build
@@ -40,7 +40,7 @@ def build():
         args.append(f"--icon={icon_path}")
     
     print("=" * 50)
-    print("Building Betfair Dutching Executable")
+    print("Building Pickfair Executable")
     print("=" * 50)
     print()
     
@@ -52,7 +52,7 @@ def build():
     print("Build Complete!")
     print("=" * 50)
     print()
-    print("Executable location: dist/BetfairDutching.exe")
+    print("Executable location: dist/Pickfair.exe")
     print()
 
 if __name__ == "__main__":

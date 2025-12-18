@@ -13,9 +13,9 @@ def get_db_path():
     """Get database path in user's app data directory."""
     if os.name == 'nt':  # Windows
         app_data = os.environ.get('APPDATA', os.path.expanduser('~'))
-        db_dir = os.path.join(app_data, 'BetfairDutching')
+        db_dir = os.path.join(app_data, 'Pickfair')
     else:  # Linux/Mac
-        db_dir = os.path.join(os.path.expanduser('~'), '.betfair-dutching')
+        db_dir = os.path.join(os.path.expanduser('~'), '.pickfair')
     
     os.makedirs(db_dir, exist_ok=True)
     return os.path.join(db_dir, 'betfair.db')

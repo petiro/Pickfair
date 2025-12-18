@@ -1,6 +1,6 @@
 @echo off
 echo ================================================
-echo   BETFAIR DUTCHING - Build Windows Executable
+echo   PICKFAIR - Build Windows Executable
 echo ================================================
 echo.
 
@@ -27,6 +27,6 @@ echo ================================================
 echo   BUILD COMPLETATO!
 echo ================================================
 echo.
-echo Trovi l'eseguibile in: dist\BetfairDutching.exe
+echo Trovi l'eseguibile in: dist\Pickfair.exe
 echo.
 pause

@@ -1,6 +1,6 @@
 ================================================================================
-                      BETFAIR DUTCHING v2.0
-               Tutti i Mercati + Streaming API
+                         PICKFAIR v3.0
+            Dutching, Cashout, Telegram Signals
 ================================================================================
 
 DESCRIZIONE
@@ -58,7 +58,7 @@ Metodo 1: Esegui direttamente (richiede Python)
 Metodo 2: Crea eseguibile .exe
   1. Doppio click su BUILD.bat
   2. Attendi 2-3 minuti
-  3. Trova BetfairDutching.exe in dist/
+  3. Trova Pickfair.exe in dist/
   4. Copia l'exe dove vuoi ed esegui
 
 
@@ -120,7 +120,7 @@ python-app/
 
 DOVE VENGONO SALVATI I DATI
 ---------------------------
-Windows: %APPDATA%\BetfairDutching\betfair.db
+Windows: %APPDATA%\Pickfair\betfair.db
 
 Il file contiene:
 - Credenziali salvate
@@ -164,5 +164,5 @@ Gioca responsabilmente e solo se maggiorenne.
 
 
 ================================================================================
-                          Versione 2.0.0 - Dicembre 2024
+                          Versione 3.0.0 - Dicembre 2024
 ================================================================================
