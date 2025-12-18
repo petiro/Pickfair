@@ -647,6 +647,117 @@ class BetfairClient:
         
         return market_pnl
     
+    def calculate_cashout(self, market_id, selection_id, side, matched_stake, matched_price):
+        """
+        Calculate cashout stake and potential P/L.
+        
+        Cashout works by placing an opposite bet to lock in profit/loss.
+        - If original bet was BACK, cashout is LAY
+        - If original bet was LAY, cashout is BACK
+        
+        Returns dict with cashout_stake, green_up (profit if win), red (loss if lose)
+        """
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        # Get current prices
+        price_data = self.client.betting.list_market_book(
+            market_ids=[market_id],
+            price_projection=filters.price_projection(
+                price_data=['EX_BEST_OFFERS']
+            )
+        )
+        
+        if not price_data:
+            raise Exception("Quote non disponibili")
+        
+        current_price = None
+        for runner in price_data[0].runners:
+            if runner.selection_id == selection_id:
+                if side == 'BACK':
+                    # For BACK cashout, we need LAY price
+                    if runner.ex and runner.ex.available_to_lay:
+                        current_price = runner.ex.available_to_lay[0].price
+                else:
+                    # For LAY cashout, we need BACK price
+                    if runner.ex and runner.ex.available_to_back:
+                        current_price = runner.ex.available_to_back[0].price
+                break
+        
+        if not current_price:
+            raise Exception("Prezzo corrente non disponibile")
+        
+        # Calculate cashout stake
+        if side == 'BACK':
+            # Original BACK bet: cashout by LAYing
+            # Cashout stake = (original stake * original price) / current price
+            cashout_stake = (matched_stake * matched_price) / current_price
+            
+            # If selection wins: profit from BACK, loss from LAY
+            profit_if_win = matched_stake * (matched_price - 1) - cashout_stake * (current_price - 1)
+            # If selection loses: loss from BACK (stake), profit from LAY (stake)
+            profit_if_lose = -matched_stake + cashout_stake
+        else:
+            # Original LAY bet: cashout by BACKing
+            # Cashout stake = liability / current price
+            liability = matched_stake * (matched_price - 1)
+            cashout_stake = (matched_stake * matched_price) / current_price
+            
+            # If selection wins: loss from LAY (liability), profit from BACK
+            profit_if_win = -liability + cashout_stake * (current_price - 1)
+            # If selection loses: profit from LAY (stake), loss from BACK (stake)
+            profit_if_lose = matched_stake - cashout_stake
+        
+        # Calculate green-up (equal profit on all outcomes)
+        total_profit = profit_if_win + profit_if_lose
+        green_up = total_profit / 2
+        
+        return {
+            'cashout_stake': round(cashout_stake, 2),
+            'current_price': current_price,
+            'profit_if_win': round(profit_if_win, 2),
+            'profit_if_lose': round(profit_if_lose, 2),
+            'green_up': round(green_up, 2),
+            'cashout_side': 'LAY' if side == 'BACK' else 'BACK'
+        }
+    
+    def execute_cashout(self, market_id, selection_id, cashout_side, cashout_stake, cashout_price):
+        """
+        Execute cashout by placing opposite bet.
+        
+        Returns placement result.
+        """
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        # Round stake to 2 decimal places, minimum €2 for Italy
+        stake = max(2.0, round(cashout_stake, 2))
+        
+        instructions = [
+            betfairlightweight.filters.place_instruction(
+                order_type='LIMIT',
+                selection_id=selection_id,
+                side=cashout_side,
+                limit_order=betfairlightweight.filters.limit_order(
+                    size=stake,
+                    price=cashout_price,
+                    persistence_type='LAPSE'
+                )
+            )
+        ]
+        
+        result = self.client.betting.place_orders(
+            market_id=market_id,
+            instructions=instructions
+        )
+        
+        return {
+            'status': result.status,
+            'betId': result.instruction_reports[0].bet_id if result.instruction_reports else None,
+            'sizeMatched': result.instruction_reports[0].size_matched if result.instruction_reports else 0,
+            'averagePriceMatched': result.instruction_reports[0].average_price_matched if result.instruction_reports else None
+        }
+    
     def get_live_events_only(self):
         """Get only in-play football events."""
         if not self.client:
