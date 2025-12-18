@@ -126,7 +126,7 @@ class BetfairDutchingApp:
         search_frame.pack(fill=tk.X, pady=(0, 5))
         
         self.search_var = tk.StringVar()
-        self.search_var.trace('w', self._filter_events)
+        self.search_var.trace_add('write', self._filter_events)
         search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         search_entry.pack(fill=tk.X)
         
@@ -237,7 +237,7 @@ class BetfairDutchingApp:
         
         ttk.Label(stake_frame, text="Stake Totale (EUR):").pack(side=tk.LEFT)
         self.stake_var = tk.StringVar(value='10.00')
-        self.stake_var.trace('w', lambda *args: self._recalculate())
+        self.stake_var.trace_add('write', lambda *args: self._recalculate())
         stake_entry = ttk.Entry(stake_frame, textvariable=self.stake_var, width=10)
         stake_entry.pack(side=tk.LEFT, padx=5)
         
