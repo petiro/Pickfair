@@ -77,16 +77,27 @@ class PriceStreamListener(StreamListener):
 
 class BetfairClient:
     def __init__(self, username, app_key, cert_pem, key_pem):
-        self.username = username
-        self.app_key = app_key
-        self.cert_pem = cert_pem
-        self.key_pem = key_pem
+        # Aggressive cleaning of all string values to remove newlines/whitespace
+        self.username = self._clean_string(username)
+        self.app_key = self._clean_string(app_key)
+        self.cert_pem = cert_pem.strip() if cert_pem else cert_pem
+        self.key_pem = key_pem.strip() if key_pem else key_pem
         self.client = None
         self.temp_certs_dir = None
         self.stream = None
         self.stream_thread = None
         self.streaming_active = False
         self.price_callbacks = {}
+    
+    @staticmethod
+    def _clean_string(value):
+        """Remove all whitespace, newlines, and control characters from a string."""
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            value = value.decode('utf-8', errors='ignore')
+        # Remove all whitespace and newlines
+        return ''.join(value.split())
     
     def _create_temp_cert_files(self):
         """Create temporary certificate directory for betfairlightweight.
