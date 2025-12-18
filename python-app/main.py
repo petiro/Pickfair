@@ -244,9 +244,9 @@ class BetfairDutchingApp:
                                   command=lambda: self._set_bet_type('BACK'))
         self.back_btn.pack(side=tk.LEFT, padx=5)
         
-        # Pink button for LAY
-        self.lay_btn = tk.Button(type_frame, text="Lay", bg='#f8f8f8', fg='#333',
-                                 activebackground='#ffb6c1', activeforeground='black',
+        # Pink button for LAY (banca)
+        self.lay_btn = tk.Button(type_frame, text="Lay", bg='#ffb6c1', fg='#333',
+                                 activebackground='#ff69b4', activeforeground='white',
                                  relief='raised', bd=2, padx=10,
                                  command=lambda: self._set_bet_type('LAY'))
         self.lay_btn.pack(side=tk.LEFT)
@@ -562,7 +562,9 @@ class BetfairDutchingApp:
                     ))
     
     def _format_event_date(self, event):
-        """Format event date for display."""
+        """Format event date for display, with LIVE indicator for in-play events."""
+        if event.get('inPlay'):
+            return "LIVE"
         if event.get('openDate'):
             try:
                 dt = datetime.fromisoformat(event['openDate'].replace('Z', '+00:00'))
@@ -632,6 +634,8 @@ class BetfairDutchingApp:
         display_names = []
         for m in markets:
             name = m.get('displayName') or m.get('marketName', 'Sconosciuto')
+            if m.get('inPlay'):
+                name = f"[LIVE] {name}"
             display_names.append(name)
         
         self.market_combo['values'] = display_names
@@ -820,12 +824,12 @@ class BetfairDutchingApp:
         self.bet_type_var.set(bet_type)
         
         if bet_type == 'BACK':
-            # BACK selected - blue active, gray inactive
+            # BACK selected - blue active, pink inactive for LAY
             self.back_btn.config(bg='#3498db', fg='white', relief='sunken')
-            self.lay_btn.config(bg='#f8f8f8', fg='#333', relief='raised')
+            self.lay_btn.config(bg='#ffb6c1', fg='#333', relief='raised')
         else:
-            # LAY selected - pink active, gray inactive
-            self.back_btn.config(bg='#f8f8f8', fg='#333', relief='raised')
+            # LAY selected - pink active, blue inactive for BACK
+            self.back_btn.config(bg='#a8d4f0', fg='#333', relief='raised')
             self.lay_btn.config(bg='#ff69b4', fg='white', relief='sunken')
         
         self._recalculate()

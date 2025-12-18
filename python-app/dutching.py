@@ -117,69 +117,83 @@ def _calculate_lay_dutching(
     total_stake: float
 ) -> Tuple[List[Dict], float, float]:
     """
-    Calculate LAY dutching: Lay multiple outcomes to distribute risk.
+    Calculate LAY dutching: Lay multiple outcomes for balanced profit/loss.
     
-    Liability = stake * (price - 1)
-    Distribute total liability proportionally to (price - 1)
+    For LAY bets:
+    - stake = what we receive from backer (lay stake)  
+    - liability = stake × (price - 1) = what we pay if runner wins
+    - profit if runner loses = stake
+    - loss if runner wins = liability
+    
+    Example: LAY at odds 1.5 with stake €1
+    - profit if runner loses = €1
+    - loss if runner wins = €1 × (1.5 - 1) = €0.50
+    
+    We treat total_stake as total LIABILITY and distribute proportionally
+    by implied probability (1/price), then calculate stakes from liabilities.
+    This achieves balanced net outcomes across all selections.
     """
     results = []
-    total_liability = total_stake  # In lay, total_stake is total liability to distribute
+    total_liability = total_stake  # User input = total liability budget
     
-    # Calculate liability factors for proportional distribution
-    liability_factors = []
+    # Calculate implied probabilities for proportional distribution
+    implied_probs = []
     for sel in selections:
-        factor = sel['price'] - 1
-        liability_factors.append(factor)
+        prob = 1.0 / sel['price']
+        implied_probs.append(prob)
     
-    total_liability_factor = sum(liability_factors)
+    total_implied = sum(implied_probs)
     
-    # First pass: calculate stakes and liabilities
+    # Distribute liability proportionally by implied probability
+    raw_liabilities = []
     for i, sel in enumerate(selections):
-        liability_factor = sel['price'] - 1
-        
-        # Distribute liability proportionally
-        liability = total_liability * liability_factors[i] / total_liability_factor
-        stake = liability / liability_factor if liability_factor > 0 else 0
-        stake = round(stake, 2)
-        liability = round(liability, 2)
+        liability = total_liability * implied_probs[i] / total_implied
+        raw_liabilities.append(liability)
+    
+    # Calculate stakes from liabilities: stake = liability / (price - 1)
+    for i, sel in enumerate(selections):
+        price = sel['price']
+        liability = round(raw_liabilities[i], 2)
+        stake = round(liability / (price - 1), 2) if price > 1 else 0
         
         results.append({
             'selectionId': sel['selectionId'],
             'runnerName': sel['runnerName'],
-            'price': sel['price'],
+            'price': price,
             'stake': stake,
             'liability': liability,
-            'potentialProfit': stake  # If this selection loses, we keep the stake
+            'profitIfLoses': stake,   # Profit if this runner loses
+            'lossIfWins': liability   # Loss if this runner wins
         })
     
-    # Calculate total stakes placed
+    # Calculate totals
     total_stakes = sum(r['stake'] for r in results)
+    total_liab = sum(r['liability'] for r in results)
     
-    # Second pass: calculate profit/loss for each scenario
-    # profitIfWins = what happens if THIS runner WINS (we pay liability, collect other stakes)
+    # For each selection, calculate net P&L if that runner wins
+    # If runner X wins: we pay X's liability, collect stakes from all others (who lost)
     for r in results:
         other_stakes = total_stakes - r['stake']
         r['profitIfWins'] = round(other_stakes - r['liability'], 2)
-        r['potentialReturn'] = r['stake']  # What we collect if this runner loses
+        r['potentialReturn'] = r['stake']
     
-    # Best case: all laid selections lose (we collect all stakes)
+    # Best case: all laid selections lose (we keep all stakes)
     best_case_profit = total_stakes
     
-    # Worst case: one of our laid selections wins
+    # Worst case: the most expensive one wins
     worst_case_profit = min(r['profitIfWins'] for r in results) if results else 0
     
-    # For LAY, show best case profit (when any laid selection loses = we win)
-    # Since we're laying to PROFIT when selections lose, show positive expected outcome
-    total_profit = best_case_profit
-    
-    # Store worst case in results for display
     for r in results:
         r['worstCase'] = worst_case_profit
         r['bestCase'] = best_case_profit
     
-    implied_prob = sum(1 / s['price'] for s in selections) * 100
+    # Validate max winnings (best case profit)
+    if best_case_profit > MAX_WINNINGS:
+        raise ValueError(f"Vincita massima superata: {best_case_profit:.2f} EUR (max: {MAX_WINNINGS:.2f})")
     
-    return results, round(total_profit, 2), round(implied_prob, 2)
+    implied_prob = total_implied * 100
+    
+    return results, round(best_case_profit, 2), round(implied_prob, 2)
 
 
 def validate_selections(selections: List[Dict], bet_type: str = 'BACK') -> List[str]:

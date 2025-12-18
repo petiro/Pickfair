@@ -18,26 +18,50 @@ FOOTBALL_ID = "1"
 MARKET_TYPES = {
     'MATCH_ODDS': 'Esito Finale (1X2)',
     'CORRECT_SCORE': 'Risultato Esatto',
-    'OVER_UNDER_25': 'Over/Under 2.5 Goal',
+    'OVER_UNDER_05': 'Over/Under 0.5 Goal',
     'OVER_UNDER_15': 'Over/Under 1.5 Goal',
+    'OVER_UNDER_25': 'Over/Under 2.5 Goal',
     'OVER_UNDER_35': 'Over/Under 3.5 Goal',
+    'OVER_UNDER_45': 'Over/Under 4.5 Goal',
+    'OVER_UNDER_55': 'Over/Under 5.5 Goal',
+    'OVER_UNDER_65': 'Over/Under 6.5 Goal',
+    'OVER_UNDER_75': 'Over/Under 7.5 Goal',
     'BOTH_TEAMS_TO_SCORE': 'Goal/No Goal',
     'DOUBLE_CHANCE': 'Doppia Chance',
     'DRAW_NO_BET': 'Draw No Bet',
     'HALF_TIME': 'Primo Tempo',
     'HALF_TIME_SCORE': 'Risultato Primo Tempo',
     'HALF_TIME_FULL_TIME': 'Primo Tempo/Finale',
+    'SECOND_HALF_CORRECT_SCORE': 'Risultato Secondo Tempo',
     'ASIAN_HANDICAP': 'Handicap Asiatico',
+    'HANDICAP': 'Handicap Europeo',
     'FIRST_GOAL_SCORER': 'Primo Marcatore',
+    'LAST_GOAL_SCORER': 'Ultimo Marcatore',
     'ANYTIME_SCORER': 'Marcatore',
     'TOTAL_GOALS': 'Totale Goal',
+    'TEAM_A_TOTAL_GOALS': 'Goal Casa',
+    'TEAM_B_TOTAL_GOALS': 'Goal Trasferta',
+    'TEAM_TOTAL_GOALS': 'Goal Squadra',
     'ODD_OR_EVEN': 'Pari/Dispari Goal',
     'WINNING_MARGIN': 'Margine Vittoria',
     'NEXT_GOAL': 'Prossimo Goal',
-    'TEAM_TOTAL_GOALS': 'Goal Squadra',
+    'CLEAN_SHEET': 'Clean Sheet',
+    'WIN_TO_NIL': 'Vince a Zero',
+    'CORNER_ODDS': 'Corner',
+    'CORNER_MATCH_BET': 'Corner Vincente',
+    'TOTAL_CORNERS': 'Totale Corner',
+    'BOOKING_ODDS': 'Cartellini',
+    'TOTAL_BOOKINGS': 'Totale Cartellini',
+    'FIRST_HALF_GOALS_05': 'Goal 1T O/U 0.5',
+    'FIRST_HALF_GOALS_15': 'Goal 1T O/U 1.5',
+    'FIRST_HALF_GOALS_25': 'Goal 1T O/U 2.5',
+    'PENALTY_TAKEN': 'Rigore',
+    'TO_SCORE_BOTH_HALVES': 'Segna in Entrambi i Tempi',
+    'WIN_BOTH_HALVES': 'Vince Entrambi i Tempi',
+    'HIGHEST_SCORING_HALF': 'Tempo con Piu Goal',
+    'METHOD_OF_VICTORY': 'Tipo di Vittoria',
+    'SENDING_OFF': 'Espulsione',
 }
-
-ALL_MARKET_TYPE_CODES = list(MARKET_TYPES.keys())
 
 
 class PriceStreamListener(StreamListener):
@@ -196,8 +220,8 @@ class BetfairClient:
             'total': account.available_to_bet_balance + abs(account.exposure)
         }
     
-    def get_football_events(self):
-        """Get upcoming football events."""
+    def get_football_events(self, include_inplay=True):
+        """Get upcoming and in-play football events."""
         if not self.client:
             raise Exception("Non connesso a Betfair")
         
@@ -206,6 +230,7 @@ class BetfairClient:
             to=datetime.now() + timedelta(days=2)
         )
         
+        # Get upcoming events
         events = self.client.betting.list_events(
             filter=filters.market_filter(
                 event_type_ids=[FOOTBALL_ID],
@@ -213,44 +238,92 @@ class BetfairClient:
             )
         )
         
+        # Also get in-play events
+        inplay_events = []
+        if include_inplay:
+            try:
+                inplay_events = self.client.betting.list_events(
+                    filter=filters.market_filter(
+                        event_type_ids=[FOOTBALL_ID],
+                        in_play_only=True
+                    )
+                )
+            except:
+                pass
+        
+        # Combine events (avoid duplicates)
+        event_ids = set()
         result = []
-        for event in events:
+        
+        # Add in-play events first (marked as LIVE)
+        for event in inplay_events:
+            event_ids.add(event.event.id)
             result.append({
                 'id': event.event.id,
                 'name': event.event.name,
                 'countryCode': event.event.country_code,
                 'openDate': event.event.open_date.isoformat() if event.event.open_date else None,
-                'marketCount': event.market_count
+                'marketCount': event.market_count,
+                'inPlay': True
             })
         
-        result.sort(key=lambda x: x['openDate'] or '')
+        # Add upcoming events
+        for event in events:
+            if event.event.id not in event_ids:
+                result.append({
+                    'id': event.event.id,
+                    'name': event.event.name,
+                    'countryCode': event.event.country_code,
+                    'openDate': event.event.open_date.isoformat() if event.event.open_date else None,
+                    'marketCount': event.market_count,
+                    'inPlay': False
+                })
+        
+        # Sort: in-play first, then by date
+        result.sort(key=lambda x: (not x.get('inPlay', False), x['openDate'] or ''))
         return result
     
     def get_available_markets(self, event_id):
-        """Get all available markets for an event."""
+        """Get all available markets for an event (no type restriction)."""
         if not self.client:
             raise Exception("Non connesso a Betfair")
         
+        # Fetch ALL markets without type restriction
         markets = self.client.betting.list_market_catalogue(
             filter=filters.market_filter(
-                event_ids=[event_id],
-                market_type_codes=ALL_MARKET_TYPE_CODES
+                event_ids=[event_id]
             ),
-            market_projection=['MARKET_START_TIME'],
-            max_results=50
+            market_projection=['MARKET_START_TIME', 'MARKET_DESCRIPTION'],
+            max_results=100
         )
+        
+        # Get in-play status for these markets
+        market_ids = [m.market_id for m in markets]
+        in_play_status = {}
+        
+        if market_ids:
+            try:
+                market_books = self.client.betting.list_market_book(
+                    market_ids=market_ids[:50]  # API limit
+                )
+                for book in market_books:
+                    in_play_status[book.market_id] = book.inplay if hasattr(book, 'inplay') else False
+            except:
+                pass
         
         result = []
         for market in markets:
             market_type = market.market_type if hasattr(market, 'market_type') else None
             display_name = MARKET_TYPES.get(market_type, market.market_name)
+            is_inplay = in_play_status.get(market.market_id, False)
             
             result.append({
                 'marketId': market.market_id,
                 'marketName': market.market_name,
                 'marketType': market_type,
                 'displayName': display_name,
-                'startTime': market.market_start_time.isoformat() if market.market_start_time else None
+                'startTime': market.market_start_time.isoformat() if market.market_start_time else None,
+                'inPlay': is_inplay
             })
         
         return result
