@@ -16,7 +16,7 @@ from dutching import calculate_dutching_stakes, validate_selections, format_curr
 from telegram_listener import TelegramListener, SignalQueue
 
 APP_NAME = "Pickfair"
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.1.0"
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 LIVE_REFRESH_INTERVAL = 5000  # 5 seconds for live odds
@@ -106,6 +106,7 @@ class PickfairApp:
     
     def _on_close(self):
         """Handle window close."""
+        self._stop_auto_refresh()
         if self.client:
             self.client.logout()
         self.root.destroy()
@@ -166,6 +167,35 @@ class PickfairApp:
         self.search_var.trace_add('write', self._filter_events)
         search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         search_entry.pack(fill=tk.X)
+        
+        # Auto-refresh controls
+        auto_refresh_frame = ttk.Frame(events_frame)
+        auto_refresh_frame.pack(fill=tk.X, pady=(5, 5))
+        
+        self.auto_refresh_var = tk.BooleanVar(value=False)
+        self.auto_refresh_check = ttk.Checkbutton(
+            auto_refresh_frame,
+            text="Auto-refresh ogni",
+            variable=self.auto_refresh_var,
+            command=self._toggle_auto_refresh
+        )
+        self.auto_refresh_check.pack(side=tk.LEFT)
+        
+        self.auto_refresh_interval_var = tk.StringVar(value="10")
+        self.auto_refresh_interval = ttk.Combobox(
+            auto_refresh_frame,
+            textvariable=self.auto_refresh_interval_var,
+            values=["5", "10", "15", "30", "60"],
+            state='readonly',
+            width=4
+        )
+        self.auto_refresh_interval.pack(side=tk.LEFT, padx=2)
+        self.auto_refresh_interval.bind('<<ComboboxSelected>>', self._on_auto_refresh_interval_change)
+        
+        ttk.Label(auto_refresh_frame, text="min").pack(side=tk.LEFT)
+        
+        self.auto_refresh_status = ttk.Label(auto_refresh_frame, text="", foreground='green')
+        self.auto_refresh_status.pack(side=tk.LEFT, padx=10)
         
         # Hierarchical tree: Country -> Matches
         columns = ('name', 'date')
@@ -509,7 +539,6 @@ class PickfairApp:
         
         self._update_balance()
         self._load_events()
-        self._start_auto_refresh()
     
     def _on_connection_error(self, error):
         """Handle connection error."""
@@ -518,26 +547,10 @@ class PickfairApp:
         self.client = None
         messagebox.showerror("Errore Connessione", error)
     
-    def _start_auto_refresh(self):
-        """Start auto-refresh every 30 seconds."""
-        self._stop_auto_refresh()  # Cancel any existing
-        
-        def refresh():
-            if self.client:
-                self._load_events()
-                self.auto_refresh_id = self.root.after(30000, refresh)
-        
-        self.auto_refresh_id = self.root.after(30000, refresh)
-    
-    def _stop_auto_refresh(self):
-        """Stop auto-refresh timer."""
-        if hasattr(self, 'auto_refresh_id') and self.auto_refresh_id:
-            self.root.after_cancel(self.auto_refresh_id)
-            self.auto_refresh_id = None
-    
     def _disconnect(self):
         """Disconnect from Betfair."""
         self._stop_auto_refresh()
+        self.auto_refresh_var.set(False)
         
         if self.client:
             self.client.logout()
@@ -635,6 +648,48 @@ class PickfairApp:
     def _filter_events(self, *args):
         """Filter events by search text."""
         self._populate_events_tree()
+    
+    def _toggle_auto_refresh(self):
+        """Toggle auto-refresh of events list."""
+        if self.auto_refresh_var.get():
+            self._start_auto_refresh()
+        else:
+            self._stop_auto_refresh()
+    
+    def _start_auto_refresh(self):
+        """Start auto-refresh timer."""
+        if not self.client:
+            self.auto_refresh_var.set(False)
+            messagebox.showwarning("Attenzione", "Connettiti prima a Betfair")
+            return
+        
+        self._stop_auto_refresh()  # Stop any existing timer
+        
+        interval_min = int(self.auto_refresh_interval_var.get())
+        interval_ms = interval_min * 60 * 1000
+        
+        def do_refresh():
+            if self.client and self.auto_refresh_var.get():
+                self._load_events()
+                self._update_balance()
+                now = datetime.now().strftime('%H:%M:%S')
+                self.auto_refresh_status.config(text=f"Ultimo: {now}")
+                self.auto_refresh_id = self.root.after(interval_ms, do_refresh)
+        
+        self.auto_refresh_id = self.root.after(interval_ms, do_refresh)
+        self.auto_refresh_status.config(text="Attivo")
+    
+    def _stop_auto_refresh(self):
+        """Stop auto-refresh timer."""
+        if self.auto_refresh_id:
+            self.root.after_cancel(self.auto_refresh_id)
+            self.auto_refresh_id = None
+        self.auto_refresh_status.config(text="")
+    
+    def _on_auto_refresh_interval_change(self, event=None):
+        """Handle auto-refresh interval change."""
+        if self.auto_refresh_var.get():
+            self._start_auto_refresh()
     
     def _refresh_data(self):
         """Refresh all data."""
