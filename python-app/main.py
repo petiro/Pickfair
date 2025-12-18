@@ -49,6 +49,7 @@ class BetfairDutchingApp:
         self.telegram_listener = None
         self.telegram_signal_queue = SignalQueue()
         self.telegram_status = 'STOPPED'
+        self.market_status = 'OPEN'
         
         self._create_menu()
         self._create_main_layout()
@@ -239,6 +240,15 @@ class BetfairDutchingApp:
             state=tk.DISABLED
         )
         self.dutch_modal_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Market status indicator
+        self.market_status_label = tk.Label(
+            stream_frame,
+            text="",
+            font=('Segoe UI', 9, 'bold'),
+            padx=10
+        )
+        self.market_status_label.pack(side=tk.RIGHT, padx=10)
         
         columns = ('select', 'name', 'back', 'back_size', 'lay', 'lay_size')
         self.runners_tree = ttk.Treeview(market_frame, columns=columns, show='headings', height=18)
@@ -720,7 +730,27 @@ class BetfairDutchingApp:
         self.current_market = market
         self.runners_tree.delete(*self.runners_tree.get_children())
         self.refresh_prices_btn.config(state=tk.NORMAL)
-        self.dutch_modal_btn.config(state=tk.NORMAL)
+        
+        # Update market status
+        self.market_status = market.get('status', 'OPEN')
+        is_inplay = market.get('inPlay', False)
+        
+        # Update status indicator
+        if self.market_status == 'SUSPENDED':
+            self.market_status_label.config(text="SOSPESO", bg='#dc3545', fg='white')
+            self.dutch_modal_btn.config(state=tk.DISABLED)
+            self.place_btn.config(state=tk.DISABLED)
+        elif self.market_status == 'CLOSED':
+            self.market_status_label.config(text="CHIUSO", bg='#6c757d', fg='white')
+            self.dutch_modal_btn.config(state=tk.DISABLED)
+            self.place_btn.config(state=tk.DISABLED)
+        else:
+            if is_inplay:
+                self.market_status_label.config(text="LIVE - APERTO", bg='#28a745', fg='white')
+            else:
+                self.market_status_label.config(text="APERTO", bg='#28a745', fg='white')
+            self.dutch_modal_btn.config(state=tk.NORMAL)
+            # place_btn state is managed by calculate function
         
         for runner in market['runners']:
             back_price = f"{runner['backPrice']:.2f}" if runner.get('backPrice') else "-"
@@ -1009,6 +1039,17 @@ class BetfairDutchingApp:
             return
         
         if not self.current_market:
+            return
+        
+        # Check if market is suspended
+        if self.market_status == 'SUSPENDED':
+            messagebox.showwarning("Mercato Sospeso", 
+                "Il mercato e' attualmente sospeso.\nAttendi che riapra per piazzare scommesse.")
+            return
+        
+        if self.market_status == 'CLOSED':
+            messagebox.showwarning("Mercato Chiuso", 
+                "Il mercato e' chiuso. Non e' possibile piazzare scommesse.")
             return
         
         total_stake = sum(r['stake'] for r in self.calculated_results)
@@ -1607,6 +1648,17 @@ class BetfairDutchingApp:
         
         def place_modal_bets():
             if not hasattr(dialog, 'calculated_results'):
+                return
+            
+            # Check if market is suspended
+            if self.market_status == 'SUSPENDED':
+                messagebox.showwarning("Mercato Sospeso", 
+                    "Il mercato e' attualmente sospeso.\nAttendi che riapra per piazzare scommesse.")
+                return
+            
+            if self.market_status == 'CLOSED':
+                messagebox.showwarning("Mercato Chiuso", 
+                    "Il mercato e' chiuso. Non e' possibile piazzare scommesse.")
                 return
             
             if not messagebox.askyesno("Conferma", "Piazzare le scommesse?"):

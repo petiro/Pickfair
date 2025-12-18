@@ -390,11 +390,21 @@ class BetfairClient:
                 'status': runner_prices.status if runner_prices else 'ACTIVE'
             })
         
+        market_status = 'OPEN'
+        if hasattr(price_book, 'status'):
+            market_status = price_book.status
+        
+        is_inplay = False
+        if hasattr(price_book, 'inplay'):
+            is_inplay = price_book.inplay
+        
         return {
             'marketId': market_id,
             'marketName': market.market_name,
             'startTime': market.market_start_time.isoformat() if market.market_start_time else None,
-            'runners': runners
+            'runners': runners,
+            'status': market_status,
+            'inPlay': is_inplay
         }
     
     def get_correct_score_market(self, event_id):
