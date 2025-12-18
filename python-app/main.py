@@ -409,7 +409,8 @@ class BetfairDutchingApp:
                     
                     self.root.after(0, self._on_connected)
                 except Exception as e:
-                    self.root.after(0, lambda: self._on_connection_error(str(e)))
+                    error_msg = str(e)
+                    self.root.after(0, lambda msg=error_msg: self._on_connection_error(msg))
             
             threading.Thread(target=login_thread, daemon=True).start()
         
