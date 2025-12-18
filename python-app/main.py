@@ -181,11 +181,11 @@ class PickfairApp:
         )
         self.auto_refresh_check.pack(side=tk.LEFT)
         
-        self.auto_refresh_interval_var = tk.StringVar(value="10")
+        self.auto_refresh_interval_var = tk.StringVar(value="1")
         self.auto_refresh_interval = ttk.Combobox(
             auto_refresh_frame,
             textvariable=self.auto_refresh_interval_var,
-            values=["5", "10", "15", "30", "60"],
+            values=["1", "2", "5", "10", "15", "30"],
             state='readonly',
             width=4
         )
