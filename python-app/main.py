@@ -51,6 +51,7 @@ class PickfairApp:
         self.telegram_signal_queue = SignalQueue()
         self.telegram_status = 'STOPPED'
         self.market_status = 'OPEN'
+        self.simulation_mode = False  # Simulation mode flag
         
         self._create_menu()
         self._create_main_layout()
@@ -93,6 +94,9 @@ class PickfairApp:
         menubar.add_cascade(label="Strumenti", menu=tools_menu)
         tools_menu.add_command(label="Multi-Market Monitor", command=self._show_multi_market_monitor)
         tools_menu.add_command(label="Filtri Avanzati", command=self._show_advanced_filters)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Dashboard Simulazione", command=self._show_simulation_dashboard)
+        tools_menu.add_command(label="Reset Simulazione", command=self._reset_simulation)
         
         telegram_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Telegram", menu=telegram_menu)
@@ -159,6 +163,16 @@ class PickfairApp:
         self.live_btn = tk.Button(status_frame, text="LIVE", bg='#dc3545', fg='white',
                                   activebackground='#c82333', command=self._toggle_live_mode)
         self.live_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Simulation mode button
+        self.sim_btn = tk.Button(status_frame, text="SIMULAZIONE", bg='#6c757d', fg='white',
+                                 activebackground='#5a6268', command=self._toggle_simulation_mode)
+        self.sim_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Simulation balance label (shown only in simulation mode)
+        self.sim_balance_label = ttk.Label(status_frame, text="", foreground='#9c27b0', 
+                                           font=('Segoe UI', 10, 'bold'))
+        self.sim_balance_label.pack(side=tk.LEFT, padx=10)
     
     def _create_events_panel(self, parent):
         """Create events list panel with country grouping."""
@@ -2678,6 +2692,141 @@ class PickfairApp:
                         event['name'],
                         date_str
                     ))
+    
+    def _toggle_simulation_mode(self):
+        """Toggle simulation mode on/off."""
+        self.simulation_mode = not self.simulation_mode
+        
+        if self.simulation_mode:
+            self.sim_btn.config(bg='#9c27b0', text="SIMULAZIONE ON")
+            self.root.title(f"{APP_NAME} v{APP_VERSION} - MODALITA SIMULAZIONE")
+            sim_settings = self.db.get_simulation_settings()
+            if sim_settings:
+                balance = sim_settings.get('virtual_balance', 1000)
+                self.sim_balance_label.config(text=f"Saldo Virtuale: {format_currency(balance)}")
+            messagebox.showinfo("Simulazione Attiva", 
+                "Modalita simulazione attivata!\n\n"
+                "Le scommesse NON saranno piazzate su Betfair.\n"
+                "Userai soldi virtuali per testare strategie.\n\n"
+                "Le quote sono REALI da Betfair Exchange.")
+        else:
+            self.sim_btn.config(bg='#6c757d', text="SIMULAZIONE")
+            self.root.title(f"{APP_NAME} v{APP_VERSION}")
+            self.sim_balance_label.config(text="")
+    
+    def _update_simulation_balance_display(self):
+        """Update simulation balance display."""
+        if self.simulation_mode:
+            sim_settings = self.db.get_simulation_settings()
+            if sim_settings:
+                balance = sim_settings.get('virtual_balance', 1000)
+                self.sim_balance_label.config(text=f"Saldo Virtuale: {format_currency(balance)}")
+    
+    def _show_simulation_dashboard(self):
+        """Show simulation statistics dashboard."""
+        stats = self.db.get_simulation_stats()
+        if not stats:
+            messagebox.showinfo("Simulazione", "Nessun dato di simulazione disponibile")
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Dashboard Simulazione")
+        dialog.geometry("500x450")
+        dialog.transient(self.root)
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="Statistiche Simulazione", style='Title.TLabel').pack(pady=(0, 20))
+        
+        # Balance section
+        balance_frame = ttk.LabelFrame(frame, text="Bilancio", padding=10)
+        balance_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(balance_frame, text=f"Saldo Iniziale: {format_currency(stats['starting_balance'])}").pack(anchor=tk.W)
+        ttk.Label(balance_frame, text=f"Saldo Attuale: {format_currency(stats['virtual_balance'])}", 
+                  style='Money.TLabel').pack(anchor=tk.W)
+        
+        pl_color = 'green' if stats['profit_loss'] >= 0 else 'red'
+        pl_label = ttk.Label(balance_frame, text=f"Profitto/Perdita: {format_currency(stats['profit_loss'])}")
+        pl_label.pack(anchor=tk.W)
+        pl_label.config(foreground=pl_color)
+        
+        # Stats section
+        stats_frame = ttk.LabelFrame(frame, text="Statistiche Scommesse", padding=10)
+        stats_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Label(stats_frame, text=f"Totale Scommesse: {stats['total_bets']}").pack(anchor=tk.W)
+        ttk.Label(stats_frame, text=f"Vinte: {stats['total_won']}").pack(anchor=tk.W)
+        ttk.Label(stats_frame, text=f"Perse: {stats['total_lost']}").pack(anchor=tk.W)
+        ttk.Label(stats_frame, text=f"Win Rate: {stats['win_rate']:.1f}%").pack(anchor=tk.W)
+        
+        # Recent bets
+        bets_frame = ttk.LabelFrame(frame, text="Ultime Scommesse Simulate", padding=10)
+        bets_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        bets = self.db.get_simulation_bets(limit=10)
+        
+        columns = ('evento', 'stake', 'profitto', 'data')
+        bets_tree = ttk.Treeview(bets_frame, columns=columns, show='headings', height=6)
+        bets_tree.heading('evento', text='Evento')
+        bets_tree.heading('stake', text='Stake')
+        bets_tree.heading('profitto', text='Profitto')
+        bets_tree.heading('data', text='Data')
+        
+        bets_tree.column('evento', width=150)
+        bets_tree.column('stake', width=80)
+        bets_tree.column('profitto', width=80)
+        bets_tree.column('data', width=120)
+        
+        for bet in bets:
+            date_str = bet['placed_at'][:16] if bet.get('placed_at') else '-'
+            bets_tree.insert('', tk.END, values=(
+                bet.get('event_name', '-')[:20],
+                format_currency(bet.get('total_stake', 0)),
+                format_currency(bet.get('potential_profit', 0)),
+                date_str
+            ))
+        
+        bets_tree.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Button(frame, text="Chiudi", command=dialog.destroy).pack(pady=10)
+    
+    def _reset_simulation(self):
+        """Reset simulation balance and history."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Reset Simulazione")
+        dialog.geometry("300x200")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="Nuovo Saldo Iniziale (EUR):").pack(anchor=tk.W)
+        balance_var = tk.StringVar(value="1000.00")
+        ttk.Entry(frame, textvariable=balance_var, width=15).pack(anchor=tk.W, pady=5)
+        
+        ttk.Label(frame, text="Questo cancellera tutto lo storico\ndelle scommesse simulate.", 
+                  foreground='gray').pack(pady=10)
+        
+        def do_reset():
+            try:
+                new_balance = float(balance_var.get())
+                if new_balance <= 0:
+                    raise ValueError()
+                self.db.reset_simulation(new_balance)
+                self._update_simulation_balance_display()
+                dialog.destroy()
+                messagebox.showinfo("Reset Completato", 
+                    f"Simulazione resettata.\nNuovo saldo: {format_currency(new_balance)}")
+            except ValueError:
+                messagebox.showerror("Errore", "Inserisci un importo valido")
+        
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="Reset", command=do_reset).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Annulla", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
     
     def run(self):
         """Start the application."""
