@@ -606,19 +606,23 @@ class BetfairClient:
             instructions=place_instructions
         )
         
+        # Handle different response structures from betfairlightweight
+        instruction_reports = getattr(result, 'instruction_reports', None) or getattr(result, 'instructionReports', None) or []
+        
+        reports = []
+        for ir in instruction_reports:
+            reports.append({
+                'status': getattr(ir, 'status', 'UNKNOWN'),
+                'betId': getattr(ir, 'bet_id', None) or getattr(ir, 'betId', None),
+                'placedDate': ir.placed_date.isoformat() if getattr(ir, 'placed_date', None) else None,
+                'averagePriceMatched': getattr(ir, 'average_price_matched', None) or getattr(ir, 'averagePriceMatched', None),
+                'sizeMatched': getattr(ir, 'size_matched', 0) or getattr(ir, 'sizeMatched', 0)
+            })
+        
         return {
-            'status': result.status,
-            'marketId': result.market_id,
-            'instructionReports': [
-                {
-                    'status': ir.status,
-                    'betId': ir.bet_id,
-                    'placedDate': ir.placed_date.isoformat() if ir.placed_date else None,
-                    'averagePriceMatched': ir.average_price_matched,
-                    'sizeMatched': ir.size_matched
-                }
-                for ir in result.instruction_reports
-            ] if result.instruction_reports else []
+            'status': getattr(result, 'status', 'UNKNOWN'),
+            'marketId': getattr(result, 'market_id', None) or getattr(result, 'marketId', market_id),
+            'instructionReports': reports
         }
     
     def get_current_orders(self, market_ids=None):
@@ -679,15 +683,19 @@ class BetfairClient:
             instructions=instructions if instructions else None
         )
         
+        # Handle different response structures
+        instruction_reports = getattr(result, 'instruction_reports', None) or getattr(result, 'instructionReports', None) or []
+        
+        reports = []
+        for ir in instruction_reports:
+            reports.append({
+                'status': getattr(ir, 'status', 'UNKNOWN'),
+                'sizeCancelled': getattr(ir, 'size_cancelled', 0) or getattr(ir, 'sizeCancelled', 0)
+            })
+        
         return {
-            'status': result.status,
-            'instructionReports': [
-                {
-                    'status': ir.status,
-                    'sizeCancelled': ir.size_cancelled if hasattr(ir, 'size_cancelled') else 0
-                }
-                for ir in result.instruction_reports
-            ] if result.instruction_reports else []
+            'status': getattr(result, 'status', 'UNKNOWN'),
+            'instructionReports': reports
         }
     
     def get_market_profit_and_loss(self, market_ids):
@@ -840,11 +848,23 @@ class BetfairClient:
             instructions=instructions
         )
         
+        # Handle different response structures
+        instruction_reports = getattr(result, 'instruction_reports', None) or getattr(result, 'instructionReports', None) or []
+        
+        bet_id = None
+        size_matched = 0
+        avg_price = None
+        if instruction_reports:
+            ir = instruction_reports[0]
+            bet_id = getattr(ir, 'bet_id', None) or getattr(ir, 'betId', None)
+            size_matched = getattr(ir, 'size_matched', 0) or getattr(ir, 'sizeMatched', 0)
+            avg_price = getattr(ir, 'average_price_matched', None) or getattr(ir, 'averagePriceMatched', None)
+        
         return {
-            'status': result.status,
-            'betId': result.instruction_reports[0].bet_id if result.instruction_reports else None,
-            'sizeMatched': result.instruction_reports[0].size_matched if result.instruction_reports else 0,
-            'averagePriceMatched': result.instruction_reports[0].average_price_matched if result.instruction_reports else None
+            'status': getattr(result, 'status', 'UNKNOWN'),
+            'betId': bet_id,
+            'sizeMatched': size_matched,
+            'averagePriceMatched': avg_price
         }
     
     def get_live_events_only(self):
