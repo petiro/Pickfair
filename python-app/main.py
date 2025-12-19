@@ -412,6 +412,294 @@ class PickfairApp:
         ttk.Button(btn_frame, text="Cancella Selezioni", command=self._clear_selections).pack(side=tk.LEFT)
         self.place_btn = ttk.Button(btn_frame, text="Piazza Scommesse", command=self._place_bets, state=tk.DISABLED)
         self.place_btn.pack(side=tk.RIGHT)
+        
+        # Market Info Section
+        info_frame = ttk.LabelFrame(parent, text="Info Mercato", padding=5)
+        info_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        
+        # Market details labels
+        self.market_info_name = ttk.Label(info_frame, text="Evento: -", font=('Segoe UI', 9))
+        self.market_info_name.pack(anchor=tk.W, pady=2)
+        
+        self.market_info_type = ttk.Label(info_frame, text="Mercato: -", font=('Segoe UI', 9))
+        self.market_info_type.pack(anchor=tk.W, pady=2)
+        
+        self.market_info_status = ttk.Label(info_frame, text="Stato: -", font=('Segoe UI', 9))
+        self.market_info_status.pack(anchor=tk.W, pady=2)
+        
+        self.market_info_matched = ttk.Label(info_frame, text="Volumi: -", font=('Segoe UI', 9))
+        self.market_info_matched.pack(anchor=tk.W, pady=2)
+        
+        ttk.Separator(info_frame, orient='horizontal').pack(fill=tk.X, pady=5)
+        
+        # Cashout section in market view
+        ttk.Label(info_frame, text="Cashout Mercato Corrente", style='Header.TLabel').pack(anchor=tk.W, pady=(5, 2))
+        
+        # Cashout positions list
+        cashout_cols = ('sel', 'tipo', 'p/l')
+        self.market_cashout_tree = ttk.Treeview(info_frame, columns=cashout_cols, show='headings', height=4)
+        self.market_cashout_tree.heading('sel', text='Selezione')
+        self.market_cashout_tree.heading('tipo', text='Tipo')
+        self.market_cashout_tree.heading('p/l', text='P/L')
+        self.market_cashout_tree.column('sel', width=80)
+        self.market_cashout_tree.column('tipo', width=40)
+        self.market_cashout_tree.column('p/l', width=60)
+        
+        self.market_cashout_tree.tag_configure('profit', foreground='#28a745')
+        self.market_cashout_tree.tag_configure('loss', foreground='#dc3545')
+        
+        self.market_cashout_tree.pack(fill=tk.X, pady=2)
+        
+        # Cashout buttons
+        cashout_btn_frame = ttk.Frame(info_frame)
+        cashout_btn_frame.pack(fill=tk.X, pady=5)
+        
+        self.market_cashout_btn = tk.Button(cashout_btn_frame, text="CASHOUT", bg='#28a745', fg='white',
+                                            font=('Segoe UI', 9, 'bold'), state=tk.DISABLED,
+                                            command=self._do_market_cashout)
+        self.market_cashout_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.market_live_tracking_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cashout_btn_frame, text="Live", variable=self.market_live_tracking_var,
+                       command=self._toggle_market_live_tracking).pack(side=tk.LEFT, padx=5)
+        
+        self.market_live_status = ttk.Label(cashout_btn_frame, text="", font=('Segoe UI', 8, 'bold'))
+        self.market_live_status.pack(side=tk.LEFT)
+        
+        ttk.Button(cashout_btn_frame, text="Aggiorna", command=self._update_market_cashout_positions).pack(side=tk.RIGHT, padx=2)
+        
+        # Store live tracking timer ID and fetch state
+        self.market_live_tracking_id = None
+        self.market_cashout_fetch_in_progress = False
+        self.market_cashout_fetch_cancelled = False  # Cancellation flag
+        self.market_cashout_positions = {}
+    
+    def _update_market_info(self):
+        """Update market info display."""
+        if not self.current_market:
+            self.market_info_name.config(text="Evento: -")
+            self.market_info_type.config(text="Mercato: -")
+            self.market_info_status.config(text="Stato: -")
+            self.market_info_matched.config(text="Volumi: -")
+            return
+        
+        event_name = self.current_event.get('name', '-') if self.current_event else '-'
+        self.market_info_name.config(text=f"Evento: {event_name[:25]}")
+        
+        market_name = self.current_market.get('marketName', '-')
+        self.market_info_type.config(text=f"Mercato: {market_name[:20]}")
+        
+        status = self.current_market.get('status', 'UNKNOWN')
+        is_live = self.current_market.get('inPlay', False)
+        status_text = f"LIVE - {status}" if is_live else status
+        self.market_info_status.config(text=f"Stato: {status_text}")
+        
+        total_matched = self.current_market.get('totalMatched', 0)
+        self.market_info_matched.config(text=f"Volumi: {total_matched:,.0f} EUR")
+    
+    def _update_market_cashout_positions(self):
+        """Update cashout positions for current market."""
+        # Prevent spawning multiple fetch threads
+        if self.market_cashout_fetch_in_progress:
+            return
+        
+        # Clear existing
+        for item in self.market_cashout_tree.get_children():
+            self.market_cashout_tree.delete(item)
+        
+        if not self.client or not self.current_market:
+            self.market_cashout_btn.config(state=tk.DISABLED)
+            return
+        
+        market_id = self.current_market.get('marketId')
+        if not market_id:
+            return
+        
+        self.market_cashout_fetch_in_progress = True
+        self.market_cashout_fetch_cancelled = False  # Reset cancellation flag
+        
+        # Capture current tracking state to check if still active when thread completes
+        current_market_id = market_id
+        
+        def fetch_positions():
+            try:
+                # Check cancellation before API call
+                if self.market_cashout_fetch_cancelled:
+                    self.market_cashout_fetch_in_progress = False
+                    return
+                
+                orders = self.client.get_current_orders()
+                matched = orders.get('matched', [])
+                
+                # Check cancellation after API call
+                if self.market_cashout_fetch_cancelled:
+                    self.market_cashout_fetch_in_progress = False
+                    return
+                
+                # Filter orders for current market
+                market_orders = [o for o in matched if o.get('marketId') == current_market_id]
+                
+                positions = []
+                for order in market_orders:
+                    # Check cancellation during processing
+                    if self.market_cashout_fetch_cancelled:
+                        self.market_cashout_fetch_in_progress = False
+                        return
+                    
+                    selection_id = order.get('selectionId')
+                    side = order.get('side')
+                    price = order.get('price', 0)
+                    stake = order.get('sizeMatched', 0)
+                    
+                    if stake > 0:
+                        try:
+                            cashout_info = self.client.calculate_cashout(
+                                current_market_id, selection_id, side, stake, price
+                            )
+                            green_up = cashout_info.get('green_up', 0)
+                        except:
+                            cashout_info = None
+                            green_up = 0
+                        
+                        # Get runner name from current market if still same
+                        runner_name = str(selection_id)
+                        if self.current_market and self.current_market.get('marketId') == current_market_id:
+                            for r in self.current_market.get('runners', []):
+                                if str(r.get('selectionId')) == str(selection_id):
+                                    runner_name = r.get('runnerName', runner_name)[:15]
+                                    break
+                        
+                        positions.append({
+                            'bet_id': order.get('betId'),
+                            'selection_id': selection_id,
+                            'runner_name': runner_name,
+                            'side': side,
+                            'price': price,
+                            'stake': stake,
+                            'green_up': green_up,
+                            'cashout_info': cashout_info
+                        })
+                
+                # Only update UI if not cancelled and still on same market
+                def update_ui():
+                    self.market_cashout_fetch_in_progress = False
+                    if not self.market_cashout_fetch_cancelled:
+                        if self.current_market and self.current_market.get('marketId') == current_market_id:
+                            self._display_market_cashout_positions(positions)
+                
+                self.root.after(0, update_ui)
+            except Exception as e:
+                self.market_cashout_fetch_in_progress = False
+                print(f"Error fetching cashout positions: {e}")
+        
+        threading.Thread(target=fetch_positions, daemon=True).start()
+    
+    def _display_market_cashout_positions(self, positions):
+        """Display cashout positions in market view."""
+        for item in self.market_cashout_tree.get_children():
+            self.market_cashout_tree.delete(item)
+        
+        self.market_cashout_positions = {}
+        
+        for pos in positions:
+            bet_id = pos['bet_id']
+            green_up = pos['green_up']
+            pl_tag = 'profit' if green_up > 0 else 'loss'
+            
+            self.market_cashout_tree.insert('', tk.END, iid=str(bet_id), values=(
+                pos['runner_name'],
+                pos['side'],
+                f"{green_up:+.2f}"
+            ), tags=(pl_tag,))
+            
+            self.market_cashout_positions[str(bet_id)] = pos
+        
+        if positions:
+            self.market_cashout_btn.config(state=tk.NORMAL)
+        else:
+            self.market_cashout_btn.config(state=tk.DISABLED)
+    
+    def _toggle_market_live_tracking(self):
+        """Toggle live tracking for market cashout."""
+        if self.market_live_tracking_var.get():
+            self._start_market_live_tracking()
+        else:
+            self._stop_market_live_tracking()
+    
+    def _start_market_live_tracking(self):
+        """Start live tracking for market cashout."""
+        def update():
+            if not self.market_live_tracking_var.get():
+                return
+            self._update_market_cashout_positions()
+            self.market_live_tracking_id = self.root.after(5000, update)
+        
+        self._update_market_cashout_positions()
+        self.market_live_tracking_id = self.root.after(5000, update)
+        self.market_live_status.config(text="LIVE", foreground='#28a745')
+    
+    def _stop_market_live_tracking(self):
+        """Stop live tracking for market cashout."""
+        if self.market_live_tracking_id:
+            self.root.after_cancel(self.market_live_tracking_id)
+            self.market_live_tracking_id = None
+        # Signal cancellation to any in-flight fetch thread
+        self.market_cashout_fetch_cancelled = True
+        self.market_live_status.config(text="", foreground='gray')
+    
+    def _do_market_cashout(self):
+        """Execute cashout for selected position in market view."""
+        selected = self.market_cashout_tree.selection()
+        if not selected:
+            messagebox.showwarning("Attenzione", "Seleziona una posizione")
+            return
+        
+        for bet_id in selected:
+            pos = self.market_cashout_positions.get(bet_id)
+            if not pos or not pos.get('cashout_info'):
+                continue
+            
+            info = pos['cashout_info']
+            confirm = messagebox.askyesno(
+                "Conferma Cashout",
+                f"Eseguire cashout?\n\n"
+                f"Selezione: {pos['runner_name']}\n"
+                f"Tipo: {info['cashout_side']} @ {info['current_price']:.2f}\n"
+                f"Stake: {info['cashout_stake']:.2f}\n"
+                f"Profitto garantito: {info['green_up']:+.2f}"
+            )
+            
+            if confirm:
+                try:
+                    result = self.client.execute_cashout(
+                        self.current_market['marketId'],
+                        pos['selection_id'],
+                        info['cashout_side'],
+                        info['cashout_stake'],
+                        info['current_price']
+                    )
+                    
+                    if result.get('status') == 'SUCCESS':
+                        self.db.save_cashout_transaction(
+                            market_id=self.current_market['marketId'],
+                            selection_id=pos['selection_id'],
+                            original_bet_id=bet_id,
+                            cashout_bet_id=result.get('betId'),
+                            original_side=pos['side'],
+                            original_stake=pos['stake'],
+                            original_price=pos['price'],
+                            cashout_side=info['cashout_side'],
+                            cashout_stake=info['cashout_stake'],
+                            cashout_price=result.get('averagePriceMatched') or info['current_price'],
+                            profit_loss=info['green_up']
+                        )
+                        messagebox.showinfo("Successo", f"Cashout eseguito!\nProfitto: {info['green_up']:+.2f}")
+                        self._update_market_cashout_positions()
+                        self._update_balance_display()
+                    else:
+                        messagebox.showerror("Errore", f"Cashout fallito: {result.get('error', 'Errore')}")
+                except Exception as e:
+                    messagebox.showerror("Errore", f"Errore cashout: {e}")
     
     def _load_settings(self):
         """Load saved settings."""
@@ -891,6 +1179,10 @@ class PickfairApp:
         if self.market_status not in ('SUSPENDED', 'CLOSED'):
             self.stream_var.set(True)
             self._start_streaming()
+        
+        # Update market info panel and cashout positions
+        self._update_market_info()
+        self._update_market_cashout_positions()
     
     def _refresh_prices(self):
         """Manually refresh prices for current market."""
@@ -2184,6 +2476,50 @@ class PickfairApp:
         cashout_btn = tk.Button(btn_frame, text="CASHOUT", bg='#28a745', fg='white', 
                                font=('Segoe UI', 10, 'bold'), command=do_cashout)
         cashout_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Live tracking toggle
+        live_tracking_var = tk.BooleanVar(value=False)
+        live_tracking_id = [None]
+        
+        def toggle_live_tracking():
+            if live_tracking_var.get():
+                start_live_tracking()
+            else:
+                stop_live_tracking()
+        
+        def start_live_tracking():
+            """Start live P/L tracking."""
+            def update_pl():
+                if not live_tracking_var.get():
+                    return
+                try:
+                    load_positions()
+                except:
+                    pass
+                live_tracking_id[0] = parent.after(5000, update_pl)
+            
+            live_tracking_id[0] = parent.after(5000, update_pl)
+            live_status_label.config(text="LIVE", foreground='#28a745')
+        
+        def stop_live_tracking():
+            """Stop live tracking."""
+            if live_tracking_id[0]:
+                parent.after_cancel(live_tracking_id[0])
+                live_tracking_id[0] = None
+            live_status_label.config(text="", foreground='gray')
+        
+        ttk.Checkbutton(btn_frame, text="Live Tracking", variable=live_tracking_var,
+                       command=toggle_live_tracking).pack(side=tk.LEFT, padx=15)
+        
+        live_status_label = ttk.Label(btn_frame, text="", font=('Segoe UI', 9, 'bold'))
+        live_status_label.pack(side=tk.LEFT)
+        
+        # Stop live tracking when dialog closes
+        def on_close():
+            stop_live_tracking()
+            dialog.destroy()
+        
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
         
         # Auto-cashout section
         auto_frame = ttk.LabelFrame(parent, text="Auto-Cashout", padding=10)
