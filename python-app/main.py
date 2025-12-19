@@ -1331,6 +1331,10 @@ class PickfairApp:
     
     def _place_bets(self):
         """Place the calculated bets (real or simulated)."""
+        # Reentrancy guard - prevent double placement
+        if hasattr(self, '_placing_in_progress') and self._placing_in_progress:
+            return
+        
         if not hasattr(self, 'calculated_results') or not self.calculated_results:
             return
         
@@ -1381,10 +1385,12 @@ class PickfairApp:
         market_id = self.current_market['marketId']
         
         self.place_btn.config(state=tk.DISABLED)
+        self._placing_in_progress = True
         
         # Handle simulation mode separately
         if self.simulation_mode:
             self._place_simulation_bets(total_stake, potential_profit, bet_type)
+            self._placing_in_progress = False
             return
         
         def place():
@@ -1431,15 +1437,51 @@ class PickfairApp:
                 
                 result = self.client.place_bets(market_id, instructions)
                 
+                # Process each instruction report individually
+                reports = result.get('instructionReports', [])
+                
+                # Determine overall bet status from instruction statuses
+                all_matched = all(r.get('status') == 'SUCCESS' and r.get('sizeMatched', 0) > 0 for r in reports)
+                any_matched = any(r.get('sizeMatched', 0) > 0 for r in reports)
+                
+                if result['status'] == 'SUCCESS':
+                    if all_matched:
+                        bet_status = 'MATCHED'
+                    elif any_matched:
+                        bet_status = 'PARTIALLY_MATCHED'
+                    else:
+                        bet_status = 'PENDING'
+                elif result['status'] == 'FAILURE':
+                    bet_status = 'FAILED'
+                else:
+                    bet_status = result['status']
+                
+                # Add runner names and matched amounts to selections for storage
+                selections_with_names = []
+                for i, r in enumerate(self.calculated_results):
+                    report = reports[i] if i < len(reports) else {}
+                    selections_with_names.append({
+                        'runnerName': r.get('runnerName', 'Unknown'),
+                        'selectionId': r['selectionId'],
+                        'price': r['price'],
+                        'stake': r['stake'],
+                        'sizeMatched': report.get('sizeMatched', 0),
+                        'betId': report.get('betId'),
+                        'instructionStatus': report.get('status', 'UNKNOWN')
+                    })
+                
+                # Calculate actual matched amount
+                total_matched = sum(r.get('sizeMatched', 0) for r in reports)
+                
                 self.db.save_bet(
                     self.current_event['name'],
                     self.current_market['marketId'],
                     self.current_market['marketName'],
                     bet_type,
-                    self.calculated_results,
+                    selections_with_names,
                     total_stake,
                     self.calculated_results[0]['profitIfWins'],
-                    result['status']
+                    bet_status
                 )
                 
                 bet_result = result
@@ -1497,6 +1539,7 @@ class PickfairApp:
     
     def _on_bets_placed(self, result):
         """Handle successful bet placement."""
+        self._placing_in_progress = False
         self.place_btn.config(state=tk.NORMAL)
         
         if result['status'] == 'SUCCESS':
@@ -1509,6 +1552,7 @@ class PickfairApp:
     
     def _on_bets_error(self, error):
         """Handle bet placement error."""
+        self._placing_in_progress = False
         self.place_btn.config(state=tk.NORMAL)
         messagebox.showerror("Errore", f"Errore piazzamento: {error}")
     
@@ -1806,21 +1850,29 @@ class PickfairApp:
         self._create_cashout_view(cashout_frame, dialog)
     
     def _create_bets_list(self, parent, bets):
-        """Create a list view of bets."""
-        columns = ('data', 'evento', 'mercato', 'tipo', 'stake', 'stato')
+        """Create a list view of bets with status colors."""
+        columns = ('data', 'evento', 'mercato', 'tipo', 'stake', 'profitto', 'stato')
         tree = ttk.Treeview(parent, columns=columns, show='headings', height=12)
         tree.heading('data', text='Data')
         tree.heading('evento', text='Evento')
         tree.heading('mercato', text='Mercato')
         tree.heading('tipo', text='Tipo')
         tree.heading('stake', text='Stake')
+        tree.heading('profitto', text='Prof. Atteso')
         tree.heading('stato', text='Stato')
         tree.column('data', width=100)
-        tree.column('evento', width=150)
-        tree.column('mercato', width=120)
-        tree.column('tipo', width=60)
-        tree.column('stake', width=80)
+        tree.column('evento', width=140)
+        tree.column('mercato', width=110)
+        tree.column('tipo', width=50)
+        tree.column('stake', width=70)
+        tree.column('profitto', width=70)
         tree.column('stato', width=80)
+        
+        # Configure status color tags
+        tree.tag_configure('matched', foreground='#28a745')  # Green
+        tree.tag_configure('pending', foreground='#ffc107')   # Yellow/Orange
+        tree.tag_configure('partially_matched', foreground='#17a2b8')  # Blue
+        tree.tag_configure('settled', foreground='#6c757d')   # Gray
         
         scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscrollcommand=scrollbar.set)
@@ -1828,16 +1880,28 @@ class PickfairApp:
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
+        if not bets:
+            ttk.Label(parent, text="Nessuna scommessa recente", font=('Segoe UI', 10)).pack(pady=20)
+        
         for bet in bets:
             placed_at = bet.get('placed_at', '')[:16] if bet.get('placed_at') else ''
+            status = bet.get('status', '')
+            profit = bet.get('potential_profit', 0)
+            profit_display = f"+{profit:.2f}" if profit else "-"
+            
+            # Determine tag based on status
+            status_lower = status.lower().replace(' ', '_')
+            tag = status_lower if status_lower in ('matched', 'pending', 'partially_matched', 'settled') else ''
+            
             tree.insert('', tk.END, values=(
                 placed_at,
                 bet.get('event_name', '')[:25],
-                bet.get('market_name', '')[:20],
+                bet.get('market_name', '')[:18],
                 bet.get('side', bet.get('bet_type', '')),
                 f"{bet.get('stake', bet.get('total_stake', 0)):.2f}",
-                bet.get('status', '')
-            ))
+                profit_display,
+                status
+            ), tags=(tag,) if tag else ())
     
     def _create_current_orders_view(self, parent):
         """Create view for current orders from Betfair."""
@@ -1976,6 +2040,10 @@ class PickfairApp:
         tree.column('p/l_attuale', width=80)
         tree.column('azione', width=80)
         
+        # Configure tags for P/L colors
+        tree.tag_configure('profit', foreground='#28a745')  # Green for profit
+        tree.tag_configure('loss', foreground='#dc3545')    # Red for loss
+        
         tree.pack(fill=tk.BOTH, expand=True)
         
         # Store position data for cashout
@@ -2009,13 +2077,16 @@ class PickfairApp:
                             cashout_info = self.client.calculate_cashout(
                                 market_id, selection_id, side, stake, price
                             )
-                            pl_display = f"{cashout_info['green_up']:+.2f}"
-                            pl_color = 'green' if cashout_info['green_up'] > 0 else 'red'
+                            green_up = cashout_info.get('green_up', 0)
+                            pl_display = f"{green_up:+.2f}"
+                            pl_tag = 'profit' if green_up > 0 else 'loss'
                         except:
                             cashout_info = None
                             pl_display = "N/D"
+                            pl_tag = None
                         
                         item_id = f"{order.get('betId')}"
+                        tags = (pl_tag,) if pl_tag else ()
                         tree.insert('', tk.END, iid=item_id, values=(
                             market_id[:12] if market_id else '',
                             order.get('runnerName', str(selection_id))[:15],
@@ -2024,7 +2095,7 @@ class PickfairApp:
                             f"{stake:.2f}",
                             pl_display,
                             "Cashout"
-                        ))
+                        ), tags=tags)
                         
                         positions_data[item_id] = {
                             'market_id': market_id,
