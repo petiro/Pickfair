@@ -459,7 +459,7 @@ class PickfairApp:
                                             command=self._do_market_cashout)
         self.market_cashout_btn.pack(side=tk.LEFT, padx=2)
         
-        self.market_live_tracking_var = tk.BooleanVar(value=False)
+        self.market_live_tracking_var = tk.BooleanVar(value=True)  # Auto-enabled by default
         ttk.Checkbutton(cashout_btn_frame, text="Live", variable=self.market_live_tracking_var,
                        command=self._toggle_market_live_tracking).pack(side=tk.LEFT, padx=5)
         
@@ -1183,6 +1183,10 @@ class PickfairApp:
         # Update market info panel and cashout positions
         self._update_market_info()
         self._update_market_cashout_positions()
+        
+        # Auto-start live tracking for cashout if enabled
+        if self.market_live_tracking_var.get() and not self.market_live_tracking_id:
+            self._start_market_live_tracking()
     
     def _refresh_prices(self):
         """Manually refresh prices for current market."""
@@ -2478,7 +2482,7 @@ class PickfairApp:
         cashout_btn.pack(side=tk.LEFT, padx=5)
         
         # Live tracking toggle
-        live_tracking_var = tk.BooleanVar(value=False)
+        live_tracking_var = tk.BooleanVar(value=True)  # Auto-enabled by default
         live_tracking_id = [None]
         
         def toggle_live_tracking():
@@ -2566,8 +2570,9 @@ class PickfairApp:
         ttk.Label(parent, text="Auto-cashout esegue automaticamente quando P/L raggiunge target o limite",
                  font=('Segoe UI', 8)).pack(anchor=tk.W)
         
-        # Load positions on view creation
+        # Load positions on view creation and auto-start live tracking
         load_positions()
+        start_live_tracking()  # Auto-start live tracking by default
     
     def _start_booking_monitor(self):
         """Start monitoring bookings for price triggers."""
