@@ -227,9 +227,9 @@ class PickfairApp:
         self.events_tree.heading('#0', text='Nazione')
         self.events_tree.heading('name', text='Partita')
         self.events_tree.heading('date', text='Data')
-        self.events_tree.column('#0', width=100)
-        self.events_tree.column('name', width=180)
-        self.events_tree.column('date', width=80)
+        self.events_tree.column('#0', width=80, minwidth=60)
+        self.events_tree.column('name', width=150, minwidth=100)
+        self.events_tree.column('date', width=70, minwidth=60)
         
         scrollbar = ttk.Scrollbar(events_frame, orient=tk.VERTICAL, command=self.events_tree.yview)
         self.events_tree.configure(yscrollcommand=scrollbar.set)
@@ -1098,11 +1098,11 @@ class PickfairApp:
         try:
             stake = float(self.stake_var.get().replace(',', '.'))
         except ValueError:
-            stake = 2.0
+            stake = 1.0
         
-        # Minimum stake check
-        if stake < 2.0:
-            stake = 2.0
+        # Minimum stake check (€1 for Italian regulations)
+        if stake < 1.0:
+            stake = 1.0
         
         # Confirmation dialog
         tipo_text = "Back (Punta)" if bet_type == 'BACK' else "Lay (Banca)"
