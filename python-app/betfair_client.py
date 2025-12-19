@@ -562,6 +562,20 @@ class BetfairClient:
         """Check if streaming is active."""
         return self.streaming_active and self.stream is not None
     
+    def place_bet(self, market_id, selection_id, side, price, size, persistence_type='LAPSE'):
+        """
+        Place a single bet on Betfair.
+        
+        Convenience wrapper around place_bets for single bet placement.
+        """
+        instructions = [{
+            'selectionId': selection_id,
+            'side': side,
+            'price': price,
+            'size': size
+        }]
+        return self.place_bets(market_id, instructions)
+    
     def place_bets(self, market_id, instructions):
         """
         Place bets on Betfair.
