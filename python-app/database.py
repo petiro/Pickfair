@@ -146,6 +146,46 @@ class Database:
             )
         ''')
         
+        # Simulation mode tables
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS simulation_settings (
+                id INTEGER PRIMARY KEY,
+                virtual_balance REAL DEFAULT 1000.0,
+                starting_balance REAL DEFAULT 1000.0,
+                total_bets INTEGER DEFAULT 0,
+                total_won INTEGER DEFAULT 0,
+                total_lost INTEGER DEFAULT 0,
+                total_profit_loss REAL DEFAULT 0.0,
+                created_at TEXT,
+                last_reset TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS simulation_bets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_name TEXT,
+                market_id TEXT,
+                market_name TEXT,
+                side TEXT,
+                selections TEXT,
+                total_stake REAL,
+                potential_profit REAL,
+                status TEXT DEFAULT 'MATCHED',
+                placed_at TEXT,
+                settled_at TEXT,
+                profit_loss REAL,
+                result TEXT
+            )
+        ''')
+        
+        cursor.execute('SELECT COUNT(*) FROM simulation_settings')
+        if cursor.fetchone()[0] == 0:
+            cursor.execute('''
+                INSERT INTO simulation_settings (id, virtual_balance, starting_balance, created_at) 
+                VALUES (1, 1000.0, 1000.0, ?)
+            ''', (datetime.now().isoformat(),))
+        
         cursor.execute('SELECT COUNT(*) FROM settings')
         if cursor.fetchone()[0] == 0:
             cursor.execute('INSERT INTO settings (id) VALUES (1)')
@@ -537,3 +577,111 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
+    
+    # Simulation Mode Methods
+    def get_simulation_settings(self):
+        """Get simulation settings and balance."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM simulation_settings WHERE id = 1')
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+    
+    def update_simulation_balance(self, new_balance, bet_result=None):
+        """Update virtual balance after a bet."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        if bet_result == 'won':
+            cursor.execute('''
+                UPDATE simulation_settings SET 
+                    virtual_balance = ?,
+                    total_bets = total_bets + 1,
+                    total_won = total_won + 1
+                WHERE id = 1
+            ''', (new_balance,))
+        elif bet_result == 'lost':
+            cursor.execute('''
+                UPDATE simulation_settings SET 
+                    virtual_balance = ?,
+                    total_bets = total_bets + 1,
+                    total_lost = total_lost + 1
+                WHERE id = 1
+            ''', (new_balance,))
+        else:
+            cursor.execute('''
+                UPDATE simulation_settings SET virtual_balance = ? WHERE id = 1
+            ''', (new_balance,))
+        
+        conn.commit()
+        conn.close()
+    
+    def reset_simulation(self, starting_balance=1000.0):
+        """Reset simulation to starting balance."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE simulation_settings SET 
+                virtual_balance = ?,
+                starting_balance = ?,
+                total_bets = 0,
+                total_won = 0,
+                total_lost = 0,
+                total_profit_loss = 0.0,
+                last_reset = ?
+            WHERE id = 1
+        ''', (starting_balance, starting_balance, datetime.now().isoformat()))
+        cursor.execute('DELETE FROM simulation_bets')
+        conn.commit()
+        conn.close()
+    
+    def save_simulation_bet(self, event_name, market_id, market_name, side, 
+                            selections, total_stake, potential_profit):
+        """Save a simulation bet."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO simulation_bets 
+            (event_name, market_id, market_name, side, selections, 
+             total_stake, potential_profit, status, placed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'MATCHED', ?)
+        ''', (
+            event_name, market_id, market_name, side,
+            json.dumps(selections) if isinstance(selections, (list, dict)) else str(selections),
+            total_stake, potential_profit, datetime.now().isoformat()
+        ))
+        bet_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return bet_id
+    
+    def get_simulation_bets(self, limit=50):
+        """Get simulation bet history."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM simulation_bets ORDER BY placed_at DESC LIMIT ?
+        ''', (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+    
+    def get_simulation_stats(self):
+        """Get simulation statistics."""
+        settings = self.get_simulation_settings()
+        if not settings:
+            return None
+        
+        profit_loss = settings['virtual_balance'] - settings['starting_balance']
+        return {
+            'virtual_balance': settings['virtual_balance'],
+            'starting_balance': settings['starting_balance'],
+            'profit_loss': profit_loss,
+            'total_bets': settings['total_bets'],
+            'total_won': settings['total_won'],
+            'total_lost': settings['total_lost'],
+            'win_rate': (settings['total_won'] / settings['total_bets'] * 100) if settings['total_bets'] > 0 else 0
+        }
