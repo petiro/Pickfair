@@ -806,9 +806,9 @@ class BetfairClient:
             profit_if_win = -original_liability + cashout_stake * (current_price - 1)
             profit_if_lose = matched_stake - cashout_stake
         
-        # Round stake to 2 decimal places, enforce €2 minimum for Italy
+        # Round stake to 2 decimal places, enforce €1 minimum for Italy
         cashout_stake = round(cashout_stake, 2)
-        cashout_stake = max(2.0, cashout_stake)
+        cashout_stake = max(1.0, cashout_stake)
         
         # Recalculate P/L with adjusted stake
         if side == 'BACK':
@@ -841,8 +841,8 @@ class BetfairClient:
         if not self.client:
             raise Exception("Non connesso a Betfair")
         
-        # Round stake to 2 decimal places, minimum €2 for Italy
-        stake = max(2.0, round(cashout_stake, 2))
+        # Round stake to 2 decimal places, minimum €1 for Italy
+        stake = max(1.0, round(cashout_stake, 2))
         
         instructions = [
             betfairlightweight.filters.place_instruction(
