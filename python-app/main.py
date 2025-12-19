@@ -16,7 +16,7 @@ from dutching import calculate_dutching_stakes, validate_selections, format_curr
 from telegram_listener import TelegramListener, SignalQueue
 
 APP_NAME = "Pickfair"
-APP_VERSION = "3.3.0"
+APP_VERSION = "3.4.0"
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 LIVE_REFRESH_INTERVAL = 5000  # 5 seconds for live odds
@@ -1124,7 +1124,7 @@ class PickfairApp:
         self.selections_text.config(state=tk.DISABLED)
     
     def _place_bets(self):
-        """Place the calculated bets."""
+        """Place the calculated bets (real or simulated)."""
         if not hasattr(self, 'calculated_results') or not self.calculated_results:
             return
         
@@ -1143,17 +1143,43 @@ class PickfairApp:
             return
         
         total_stake = sum(r['stake'] for r in self.calculated_results)
-        msg = f"Confermi il piazzamento di {len(self.calculated_results)} scommesse?\n\n"
-        msg += f"Stake Totale: {format_currency(total_stake)}"
+        potential_profit = self.calculated_results[0].get('profitIfWins', 0)
+        bet_type = self.bet_type_var.get()
+        
+        # Different confirmation message for simulation mode
+        if self.simulation_mode:
+            sim_settings = self.db.get_simulation_settings()
+            virtual_balance = sim_settings.get('virtual_balance', 0) if sim_settings else 0
+            
+            if total_stake > virtual_balance:
+                messagebox.showwarning("Saldo Insufficiente", 
+                    f"Saldo virtuale insufficiente.\n\n"
+                    f"Stake richiesto: {format_currency(total_stake)}\n"
+                    f"Saldo disponibile: {format_currency(virtual_balance)}")
+                return
+            
+            msg = f"[SIMULAZIONE] Confermi il piazzamento virtuale?\n\n"
+            msg += f"Scommesse: {len(self.calculated_results)}\n"
+            msg += f"Stake Totale: {format_currency(total_stake)}\n"
+            msg += f"Profitto Potenziale: {format_currency(potential_profit)}\n\n"
+            msg += f"Saldo Attuale: {format_currency(virtual_balance)}\n"
+            msg += f"Saldo Dopo: {format_currency(virtual_balance - total_stake)}"
+        else:
+            msg = f"Confermi il piazzamento di {len(self.calculated_results)} scommesse?\n\n"
+            msg += f"Stake Totale: {format_currency(total_stake)}"
         
         if not messagebox.askyesno("Conferma Scommesse", msg):
             return
         
-        bet_type = self.bet_type_var.get()
         use_best_price = self.best_price_var.get()
         market_id = self.current_market['marketId']
         
         self.place_btn.config(state=tk.DISABLED)
+        
+        # Handle simulation mode separately
+        if self.simulation_mode:
+            self._place_simulation_bets(total_stake, potential_profit, bet_type)
+            return
         
         def place():
             try:
@@ -1215,6 +1241,51 @@ class PickfairApp:
                 self.root.after(0, lambda: self._on_bets_error(str(e)))
         
         threading.Thread(target=place, daemon=True).start()
+    
+    def _place_simulation_bets(self, total_stake, potential_profit, bet_type):
+        """Place simulated bets without calling Betfair API."""
+        try:
+            # Get current simulation balance
+            sim_settings = self.db.get_simulation_settings()
+            virtual_balance = sim_settings.get('virtual_balance', 0)
+            
+            # Deduct stake from virtual balance
+            new_balance = virtual_balance - total_stake
+            self.db.update_simulation_balance(new_balance)
+            
+            # Save simulation bet
+            selections_info = [
+                {'name': r.get('runnerName', 'Unknown'), 
+                 'price': r['price'], 
+                 'stake': r['stake']}
+                for r in self.calculated_results
+            ]
+            
+            self.db.save_simulation_bet(
+                event_name=self.current_event['name'],
+                market_id=self.current_market['marketId'],
+                market_name=self.current_market['marketName'],
+                side=bet_type,
+                selections=selections_info,
+                total_stake=total_stake,
+                potential_profit=potential_profit
+            )
+            
+            # Update display
+            self._update_simulation_balance_display()
+            self.place_btn.config(state=tk.NORMAL)
+            
+            messagebox.showinfo("Simulazione", 
+                f"Scommessa virtuale piazzata!\n\n"
+                f"Stake: {format_currency(total_stake)}\n"
+                f"Profitto Potenziale: {format_currency(potential_profit)}\n"
+                f"Nuovo Saldo Virtuale: {format_currency(new_balance)}")
+            
+            self._clear_selections()
+            
+        except Exception as e:
+            self.place_btn.config(state=tk.NORMAL)
+            messagebox.showerror("Errore Simulazione", f"Errore: {e}")
     
     def _on_bets_placed(self, result):
         """Handle successful bet placement."""
