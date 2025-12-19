@@ -1249,9 +1249,9 @@ class PickfairApp:
             sim_settings = self.db.get_simulation_settings()
             virtual_balance = sim_settings.get('virtual_balance', 0)
             
-            # Deduct stake from virtual balance
+            # Deduct stake from virtual balance and increment bet count
             new_balance = virtual_balance - total_stake
-            self.db.update_simulation_balance(new_balance)
+            self.db.increment_simulation_bet_count(new_balance)
             
             # Save simulation bet
             selections_info = [

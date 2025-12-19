@@ -618,6 +618,19 @@ class Database:
         conn.commit()
         conn.close()
     
+    def increment_simulation_bet_count(self, new_balance):
+        """Increment total_bets counter and update balance when placing a simulation bet."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE simulation_settings SET 
+                virtual_balance = ?,
+                total_bets = total_bets + 1
+            WHERE id = 1
+        ''', (new_balance,))
+        conn.commit()
+        conn.close()
+    
     def reset_simulation(self, starting_balance=1000.0):
         """Reset simulation to starting balance."""
         conn = sqlite3.connect(self.db_path)
