@@ -1188,9 +1188,11 @@ class PickfairApp:
                     persistence_type='LAPSE'
                 )
                 
-                self.root.after(0, lambda: self._on_quick_bet_result(result, runner, bet_type, price, stake))
+                bet_result = result
+                self.root.after(0, lambda r=bet_result, rn=runner, bt=bet_type, p=price, s=stake: self._on_quick_bet_result(r, rn, bt, p, s))
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Errore", str(e)))
+                err_msg = str(e)
+                self.root.after(0, lambda msg=err_msg: messagebox.showerror("Errore", msg))
         
         threading.Thread(target=place_thread, daemon=True).start()
     
@@ -1440,9 +1442,11 @@ class PickfairApp:
                     result['status']
                 )
                 
-                self.root.after(0, lambda: self._on_bets_placed(result))
+                bet_result = result
+                self.root.after(0, lambda r=bet_result: self._on_bets_placed(r))
             except Exception as e:
-                self.root.after(0, lambda: self._on_bets_error(str(e)))
+                err_msg = str(e)
+                self.root.after(0, lambda msg=err_msg: self._on_bets_error(msg))
         
         threading.Thread(target=place, daemon=True).start()
     
@@ -1651,9 +1655,11 @@ class PickfairApp:
         def fetch():
             try:
                 events = self.client.get_live_events_only()
-                self.root.after(0, lambda: self._populate_events(events, live_only=True))
+                live_events = events
+                self.root.after(0, lambda evts=live_events: self._populate_events(evts, live_only=True))
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Errore", str(e)))
+                err_msg = str(e)
+                self.root.after(0, lambda msg=err_msg: messagebox.showerror("Errore", msg))
         
         threading.Thread(target=fetch, daemon=True).start()
     
@@ -1744,9 +1750,11 @@ class PickfairApp:
                     active_count = self.db.get_active_bets_count()
                     
                     # Schedule UI update on main thread
-                    self.root.after(0, lambda: update_ui(funds, daily_pl, active_count))
+                    f, pl, ac = funds, daily_pl, active_count
+                    self.root.after(0, lambda f=f, pl=pl, ac=ac: update_ui(f, pl, ac))
                 except Exception as e:
-                    self.root.after(0, lambda: messagebox.showerror("Errore", str(e)))
+                    err_msg = str(e)
+                    self.root.after(0, lambda msg=err_msg: messagebox.showerror("Errore", msg))
             
             def update_ui(funds, daily_pl, active_count):
                 if not dialog.winfo_exists():
