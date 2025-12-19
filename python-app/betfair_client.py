@@ -8,10 +8,35 @@ import os
 import tempfile
 import threading
 import queue
+import time
 import betfairlightweight
 from betfairlightweight import filters
 from betfairlightweight.streaming import StreamListener
 from datetime import datetime, timedelta
+
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_DELAY = 1.0  # seconds
+
+def with_retry(func):
+    """Decorator to add retry logic for API calls."""
+    def wrapper(*args, **kwargs):
+        last_error = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                # Retry on network/server errors
+                if any(x in error_str for x in ['502', '503', '504', 'timeout', 'connection', 'network']):
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(RETRY_DELAY * (attempt + 1))
+                        continue
+                # Don't retry on other errors
+                raise
+        raise last_error
+    return wrapper
 
 FOOTBALL_ID = "1"
 
@@ -208,6 +233,7 @@ class BetfairClient:
         self._cleanup_temp_files()
         self.client = None
     
+    @with_retry
     def get_account_funds(self):
         """Get account balance."""
         if not self.client:
@@ -220,6 +246,7 @@ class BetfairClient:
             'total': account.available_to_bet_balance + abs(account.exposure)
         }
     
+    @with_retry
     def get_football_events(self, include_inplay=True):
         """Get upcoming and in-play football events."""
         if not self.client:
@@ -283,6 +310,7 @@ class BetfairClient:
         result.sort(key=lambda x: (not x.get('inPlay', False), x['openDate'] or ''))
         return result
     
+    @with_retry
     def get_available_markets(self, event_id):
         """Get all available markets for an event (no type restriction)."""
         if not self.client:
@@ -328,6 +356,7 @@ class BetfairClient:
         
         return result
     
+    @with_retry
     def get_market_with_prices(self, market_id):
         """Get a specific market with runner details and prices."""
         if not self.client:
@@ -406,6 +435,44 @@ class BetfairClient:
             'status': market_status,
             'inPlay': is_inplay
         }
+    
+    def get_market_book(self, market_id):
+        """Get current market prices (for refreshing best prices before placing bets)."""
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        price_data = self.client.betting.list_market_book(
+            market_ids=[market_id],
+            price_projection=filters.price_projection(
+                price_data=['EX_BEST_OFFERS']
+            )
+        )
+        
+        if not price_data:
+            return None
+        
+        price_book = price_data[0]
+        runners = []
+        
+        for pb_runner in price_book.runners:
+            back_price = None
+            lay_price = None
+            
+            if pb_runner.ex:
+                if pb_runner.ex.available_to_back:
+                    back_price = pb_runner.ex.available_to_back[0].price
+                if pb_runner.ex.available_to_lay:
+                    lay_price = pb_runner.ex.available_to_lay[0].price
+            
+            runners.append({
+                'selectionId': pb_runner.selection_id,
+                'ex': {
+                    'availableToBack': [{'price': back_price}] if back_price else [],
+                    'availableToLay': [{'price': lay_price}] if lay_price else []
+                }
+            })
+        
+        return {'runners': runners}
     
     def get_correct_score_market(self, event_id):
         """Get correct score market for an event (legacy method)."""

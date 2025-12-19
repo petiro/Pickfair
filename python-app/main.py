@@ -886,6 +886,11 @@ class PickfairApp:
                 lay_price,
                 lay_size
             ), tags=('runner_row',))
+        
+        # Auto-start streaming for live price updates
+        if self.market_status not in ('SUSPENDED', 'CLOSED'):
+            self.stream_var.set(True)
+            self._start_streaming()
     
     def _refresh_prices(self):
         """Manually refresh prices for current market."""
