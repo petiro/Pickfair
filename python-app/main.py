@@ -2149,12 +2149,31 @@ class PickfairApp:
                         )
                         
                         if result.get('status') == 'SUCCESS':
+                            # Record cashout transaction with profit/loss
+                            self.db.save_cashout_transaction(
+                                market_id=pos['market_id'],
+                                selection_id=pos['selection_id'],
+                                original_bet_id=item_id,
+                                cashout_bet_id=result.get('betId'),
+                                original_side=pos['side'],
+                                original_stake=pos['stake'],
+                                original_price=pos['price'],
+                                cashout_side=info['cashout_side'],
+                                cashout_stake=info['cashout_stake'],
+                                cashout_price=result.get('averagePriceMatched') or info['current_price'],
+                                profit_loss=info['green_up']
+                            )
                             messagebox.showinfo("Successo", f"Cashout eseguito!\nProfitto bloccato: {info['green_up']:+.2f}")
                             load_positions()
+                            # Update dashboard stats
+                            self._update_balance_display()
+                        elif result.get('status') == 'ERROR':
+                            messagebox.showerror("Errore", f"Cashout fallito: {result.get('error', 'Errore sconosciuto')}")
                         else:
                             messagebox.showerror("Errore", f"Cashout fallito: {result.get('status')}")
                     except Exception as e:
-                        messagebox.showerror("Errore", f"Errore cashout: {e}")
+                        err_msg = str(e)
+                        messagebox.showerror("Errore", f"Errore cashout: {err_msg}")
         
         # Buttons frame
         btn_frame = ttk.Frame(parent)

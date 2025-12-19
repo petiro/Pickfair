@@ -848,24 +848,64 @@ class BetfairClient:
             instructions=instructions
         )
         
-        # Handle different response structures
-        instruction_reports = getattr(result, 'instruction_reports', None) or getattr(result, 'instructionReports', None) or []
-        
-        bet_id = None
-        size_matched = 0
-        avg_price = None
-        if instruction_reports:
-            ir = instruction_reports[0]
-            bet_id = getattr(ir, 'bet_id', None) or getattr(ir, 'betId', None)
-            size_matched = getattr(ir, 'size_matched', 0) or getattr(ir, 'sizeMatched', 0)
-            avg_price = getattr(ir, 'average_price_matched', None) or getattr(ir, 'averagePriceMatched', None)
-        
-        return {
-            'status': getattr(result, 'status', 'UNKNOWN'),
-            'betId': bet_id,
-            'sizeMatched': size_matched,
-            'averagePriceMatched': avg_price
-        }
+        # Handle different response structures - API may return object or list
+        try:
+            if isinstance(result, list) and len(result) > 0:
+                result = result[0]
+            
+            # Try to get instruction_reports from various attribute names
+            instruction_reports = None
+            for attr_name in ['instruction_reports', 'instructionReports']:
+                try:
+                    instruction_reports = getattr(result, attr_name, None)
+                    if instruction_reports:
+                        break
+                except:
+                    pass
+            
+            # If still None, try dict-style access
+            if not instruction_reports and hasattr(result, '__getitem__'):
+                try:
+                    instruction_reports = result.get('instructionReports') or result.get('instruction_reports')
+                except:
+                    pass
+            
+            bet_id = None
+            size_matched = 0
+            avg_price = None
+            status = getattr(result, 'status', None) or 'UNKNOWN'
+            
+            if instruction_reports and len(instruction_reports) > 0:
+                ir = instruction_reports[0]
+                # Try multiple attribute patterns
+                for bid_attr in ['bet_id', 'betId']:
+                    bet_id = getattr(ir, bid_attr, None)
+                    if bet_id:
+                        break
+                for sm_attr in ['size_matched', 'sizeMatched']:
+                    size_matched = getattr(ir, sm_attr, 0)
+                    if size_matched:
+                        break
+                for ap_attr in ['average_price_matched', 'averagePriceMatched']:
+                    avg_price = getattr(ir, ap_attr, None)
+                    if avg_price:
+                        break
+            
+            return {
+                'status': status,
+                'betId': bet_id,
+                'sizeMatched': size_matched or 0,
+                'averagePriceMatched': avg_price
+            }
+        except Exception as e:
+            # Return error info but don't crash
+            return {
+                'status': 'ERROR',
+                'error': str(e),
+                'betId': None,
+                'sizeMatched': 0,
+                'averagePriceMatched': None
+            }
     
     def get_live_events_only(self):
         """Get only in-play football events."""

@@ -119,6 +119,24 @@ class Database:
         ''')
         
         cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cashout_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                market_id TEXT,
+                selection_id INTEGER,
+                original_bet_id TEXT,
+                cashout_bet_id TEXT,
+                original_side TEXT,
+                original_stake REAL,
+                original_price REAL,
+                cashout_side TEXT,
+                cashout_stake REAL,
+                cashout_price REAL,
+                profit_loss REAL,
+                executed_at TEXT
+            )
+        ''')
+        
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS telegram_settings (
                 id INTEGER PRIMARY KEY,
                 api_id TEXT,
@@ -372,17 +390,49 @@ class Database:
         return [dict(row) for row in rows]
     
     def get_today_profit_loss(self):
-        """Get today's total profit/loss."""
+        """Get today's total profit/loss including cashouts."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         today = datetime.now().strftime('%Y-%m-%d')
+        
+        # Get settled bets profit/loss
         cursor.execute('''
             SELECT COALESCE(SUM(profit_loss), 0) FROM bets 
             WHERE status = 'SETTLED' AND DATE(settled_at) = ?
         ''', (today,))
-        result = cursor.fetchone()[0]
+        bets_pl = cursor.fetchone()[0] or 0.0
+        
+        # Get cashout transactions profit/loss
+        cursor.execute('''
+            SELECT COALESCE(SUM(profit_loss), 0) FROM cashout_transactions 
+            WHERE DATE(executed_at) = ?
+        ''', (today,))
+        cashout_pl = cursor.fetchone()[0] or 0.0
+        
         conn.close()
-        return result or 0.0
+        return bets_pl + cashout_pl
+    
+    def save_cashout_transaction(self, market_id, selection_id, original_bet_id,
+                                  cashout_bet_id, original_side, original_stake,
+                                  original_price, cashout_side, cashout_stake,
+                                  cashout_price, profit_loss):
+        """Save a cashout transaction."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO cashout_transactions 
+            (market_id, selection_id, original_bet_id, cashout_bet_id,
+             original_side, original_stake, original_price, 
+             cashout_side, cashout_stake, cashout_price, profit_loss, executed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            market_id, selection_id, original_bet_id, cashout_bet_id,
+            original_side, original_stake, original_price,
+            cashout_side, cashout_stake, cashout_price, profit_loss,
+            datetime.now().isoformat()
+        ))
+        conn.commit()
+        conn.close()
     
     def get_active_bets_count(self):
         """Get count of active/pending bets."""
