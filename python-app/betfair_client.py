@@ -590,9 +590,8 @@ class BetfairClient:
         if not self.client:
             raise Exception("Non connesso a Betfair")
         
-        for inst in instructions:
-            if inst['side'] == 'BACK' and inst['size'] < 1.0:
-                raise Exception(f"Puntata minima BACK: 1.00 EUR (richiesto: {inst['size']:.2f})")
+        # Note: In dutching, individual selection stakes can be below €1
+        # Betfair Italy allows stakes as low as €0.10 per selection in multi-bet scenarios
         
         limit_orders = []
         for inst in instructions:
