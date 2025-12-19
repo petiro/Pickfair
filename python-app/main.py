@@ -14,9 +14,10 @@ from database import Database
 from betfair_client import BetfairClient, MARKET_TYPES
 from dutching import calculate_dutching_stakes, validate_selections, format_currency
 from telegram_listener import TelegramListener, SignalQueue
+from auto_updater import check_for_updates, show_update_dialog
 
 APP_NAME = "Pickfair"
-APP_VERSION = "3.4.0"
+APP_VERSION = "3.5.0"
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 LIVE_REFRESH_INTERVAL = 5000  # 5 seconds for live odds
@@ -59,6 +60,7 @@ class PickfairApp:
         self._configure_styles()
         self._start_booking_monitor()
         self._start_auto_cashout_monitor()
+        self._check_for_updates_on_startup()
     
     def _configure_styles(self):
         """Configure ttk styles with FairBot-like colors."""
@@ -87,6 +89,9 @@ class PickfairApp:
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
         file_menu.add_command(label="Configura Credenziali", command=self._show_credentials_dialog)
+        file_menu.add_command(label="Configura Aggiornamenti", command=self._show_update_settings_dialog)
+        file_menu.add_separator()
+        file_menu.add_command(label="Verifica Aggiornamenti", command=self._check_for_updates_manual)
         file_menu.add_separator()
         file_menu.add_command(label="Esci", command=self._on_close)
         
@@ -1326,6 +1331,101 @@ class PickfairApp:
             "- Certificato SSL per API\n"
             "- App Key Betfair"
         )
+    
+    def _check_for_updates_on_startup(self):
+        """Check for updates when app starts."""
+        settings = self.db.get_settings()
+        if not settings:
+            return
+        
+        update_url = settings.get('update_url')
+        if not update_url:
+            return  # No update URL configured
+        
+        skipped_version = settings.get('skipped_version')
+        
+        def on_update_result(result):
+            if result.get('update_available'):
+                latest = result.get('latest_version', '')
+                # Skip if user previously skipped this version
+                if skipped_version and latest == skipped_version:
+                    return
+                
+                # Show update dialog on main thread
+                self.root.after(100, lambda: self._show_update_notification(result))
+        
+        check_for_updates(APP_VERSION, callback=on_update_result, update_url=update_url)
+    
+    def _show_update_notification(self, update_info):
+        """Show update notification dialog."""
+        choice = show_update_dialog(self.root, update_info)
+        
+        if choice == 'skip':
+            # Save skipped version so we don't prompt again
+            self.db.save_skipped_version(update_info.get('latest_version'))
+    
+    def _check_for_updates_manual(self):
+        """Manually check for updates."""
+        settings = self.db.get_settings()
+        update_url = settings.get('update_url') if settings else None
+        
+        if not update_url:
+            messagebox.showinfo("Aggiornamenti", 
+                "Nessun URL di aggiornamento configurato.\n\n"
+                "Vai su File > Configura Aggiornamenti per impostarlo.")
+            return
+        
+        def on_result(result):
+            if result.get('update_available'):
+                self.root.after(0, lambda: self._show_update_notification(result))
+            elif result.get('error'):
+                self.root.after(0, lambda: messagebox.showerror("Errore", 
+                    f"Impossibile verificare aggiornamenti:\n{result.get('error')}"))
+            else:
+                self.root.after(0, lambda: messagebox.showinfo("Aggiornamenti", 
+                    f"Hai gia' l'ultima versione ({APP_VERSION})!"))
+        
+        check_for_updates(APP_VERSION, callback=on_result, update_url=update_url)
+    
+    def _show_update_settings_dialog(self):
+        """Show dialog to configure auto-updates."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Configura Aggiornamenti")
+        dialog.geometry("500x250")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="Configura Aggiornamenti Automatici", 
+                  style='Title.TLabel').pack(pady=(0, 15))
+        
+        settings = self.db.get_settings() or {}
+        
+        ttk.Label(frame, text="URL GitHub Releases API:").pack(anchor=tk.W)
+        ttk.Label(frame, text="(es: https://api.github.com/repos/username/repo/releases/latest)", 
+                  foreground='gray', font=('Segoe UI', 8)).pack(anchor=tk.W)
+        
+        url_var = tk.StringVar(value=settings.get('update_url', ''))
+        url_entry = ttk.Entry(frame, textvariable=url_var, width=60)
+        url_entry.pack(fill=tk.X, pady=(5, 15))
+        
+        ttk.Label(frame, text="L'app controllera' automaticamente gli aggiornamenti all'avvio.", 
+                  foreground='gray').pack(anchor=tk.W)
+        
+        def save():
+            self.db.save_update_url(url_var.get().strip())
+            self.db.save_skipped_version(None)  # Reset skipped version
+            dialog.destroy()
+            messagebox.showinfo("Salvato", "Impostazioni aggiornamento salvate!")
+        
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=15)
+        ttk.Button(btn_frame, text="Salva", command=save).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Annulla", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Verifica Ora", 
+                   command=lambda: [dialog.destroy(), self._check_for_updates_manual()]).pack(side=tk.RIGHT, padx=5)
     
     def _toggle_live_mode(self):
         """Toggle live-only mode."""

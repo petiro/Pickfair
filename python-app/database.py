@@ -49,6 +49,18 @@ class Database:
         except sqlite3.OperationalError:
             pass  # Column already exists
         
+        # Add update_url column for auto-updates
+        try:
+            cursor.execute('ALTER TABLE settings ADD COLUMN update_url TEXT')
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        
+        # Add skipped_version column for skipped updates
+        try:
+            cursor.execute('ALTER TABLE settings ADD COLUMN skipped_version TEXT')
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS bets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -250,6 +262,22 @@ class Database:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('UPDATE settings SET password = ? WHERE id = 1', (password,))
+        conn.commit()
+        conn.close()
+    
+    def save_update_url(self, update_url):
+        """Save GitHub releases URL for auto-updates."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE settings SET update_url = ? WHERE id = 1', (update_url,))
+        conn.commit()
+        conn.close()
+    
+    def save_skipped_version(self, version):
+        """Save version that user chose to skip."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE settings SET skipped_version = ? WHERE id = 1', (version,))
         conn.commit()
         conn.close()
     
