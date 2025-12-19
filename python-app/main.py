@@ -517,27 +517,41 @@ class PickfairApp:
         
         pwd_dialog = tk.Toplevel(self.root)
         pwd_dialog.title("Password Betfair")
-        pwd_dialog.geometry("350x150")
+        pwd_dialog.geometry("350x180")
         pwd_dialog.transient(self.root)
         pwd_dialog.grab_set()
         
         # Center dialog on screen
         pwd_dialog.update_idletasks()
         x = (pwd_dialog.winfo_screenwidth() // 2) - (175)
-        y = (pwd_dialog.winfo_screenheight() // 2) - (75)
-        pwd_dialog.geometry(f"350x150+{x}+{y}")
+        y = (pwd_dialog.winfo_screenheight() // 2) - (90)
+        pwd_dialog.geometry(f"350x180+{x}+{y}")
         
         frame = ttk.Frame(pwd_dialog, padding=20)
         frame.pack(fill=tk.BOTH, expand=True)
         
         ttk.Label(frame, text="Password Betfair:").pack(anchor=tk.W)
-        pwd_var = tk.StringVar()
+        
+        # Pre-populate password if saved
+        saved_password = settings.get('password', '')
+        pwd_var = tk.StringVar(value=saved_password or '')
         pwd_entry = ttk.Entry(frame, textvariable=pwd_var, show='*')
         pwd_entry.pack(fill=tk.X, pady=5)
         pwd_entry.focus()
         
+        # Save password checkbox
+        save_pwd_var = tk.BooleanVar(value=bool(saved_password))
+        ttk.Checkbutton(frame, text="Salva Password", variable=save_pwd_var).pack(anchor=tk.W, pady=5)
+        
         def do_login():
             password = pwd_var.get()
+            
+            # Save or clear password based on checkbox
+            if save_pwd_var.get():
+                self.db.save_password(password)
+            else:
+                self.db.save_password(None)
+            
             pwd_dialog.destroy()
             
             self.status_label.config(text="Connessione in corso...", style='TLabel')
