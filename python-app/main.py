@@ -16,7 +16,7 @@ from dutching import calculate_dutching_stakes, validate_selections, format_curr
 from telegram_listener import TelegramListener, SignalQueue
 
 APP_NAME = "Pickfair"
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.3.0"
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 LIVE_REFRESH_INTERVAL = 5000  # 5 seconds for live odds
@@ -353,6 +353,16 @@ class PickfairApp:
         self.stake_var.trace_add('write', lambda *args: self._recalculate())
         stake_entry = ttk.Entry(stake_frame, textvariable=self.stake_var, width=10)
         stake_entry.pack(side=tk.LEFT, padx=5)
+        
+        # Best price option
+        options_frame = ttk.Frame(dutch_frame)
+        options_frame.pack(fill=tk.X, pady=5)
+        
+        self.best_price_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options_frame, text="Accetta Miglior Prezzo", 
+                        variable=self.best_price_var).pack(side=tk.LEFT)
+        ttk.Label(options_frame, text="(piazza al prezzo corrente)", 
+                  font=('Segoe UI', 8), foreground='gray').pack(side=tk.LEFT, padx=5)
         
         ttk.Label(dutch_frame, text="Selezioni:", style='Header.TLabel').pack(anchor=tk.W, pady=(10, 5))
         
@@ -1126,21 +1136,54 @@ class PickfairApp:
             return
         
         bet_type = self.bet_type_var.get()
-        
-        instructions = []
-        for r in self.calculated_results:
-            instructions.append({
-                'selectionId': r['selectionId'],
-                'side': bet_type,
-                'price': r['price'],
-                'size': r['stake']
-            })
+        use_best_price = self.best_price_var.get()
+        market_id = self.current_market['marketId']
         
         self.place_btn.config(state=tk.DISABLED)
         
         def place():
             try:
-                result = self.client.place_bets(self.current_market['marketId'], instructions)
+                # Build instructions with current or best prices
+                instructions = []
+                
+                if use_best_price:
+                    # Fetch fresh prices before placing
+                    book = self.client.get_market_book(market_id)
+                    current_prices = {}
+                    if book and book.get('runners'):
+                        for runner in book['runners']:
+                            sel_id = runner.get('selectionId')
+                            ex = runner.get('ex', {})
+                            if bet_type == 'BACK':
+                                backs = ex.get('availableToBack', [])
+                                if backs:
+                                    current_prices[sel_id] = backs[0].get('price', 1.01)
+                            else:  # LAY
+                                lays = ex.get('availableToLay', [])
+                                if lays:
+                                    current_prices[sel_id] = lays[0].get('price', 1000)
+                    
+                    for r in self.calculated_results:
+                        sel_id = r['selectionId']
+                        # Use current best price if available, otherwise use calculated price
+                        price = current_prices.get(sel_id, r['price'])
+                        instructions.append({
+                            'selectionId': sel_id,
+                            'side': bet_type,
+                            'price': price,
+                            'size': r['stake']
+                        })
+                else:
+                    # Use original calculated prices
+                    for r in self.calculated_results:
+                        instructions.append({
+                            'selectionId': r['selectionId'],
+                            'side': bet_type,
+                            'price': r['price'],
+                            'size': r['stake']
+                        })
+                
+                result = self.client.place_bets(market_id, instructions)
                 
                 self.db.save_bet(
                     self.current_event['name'],
