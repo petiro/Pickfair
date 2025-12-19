@@ -333,6 +333,10 @@ class PickfairApp:
         self.runners_tree.bind('<ButtonRelease-1>', self._on_runner_clicked)
         self.runners_tree.bind('<Button-3>', self._show_runner_context_menu)  # Right-click
         
+        # Style for odds cells to show they're clickable
+        self.runners_tree.tag_configure('clickable_back', foreground='#0066cc')
+        self.runners_tree.tag_configure('clickable_lay', foreground='#cc0066')
+        
         # Context menu for runners
         self.runner_context_menu = tk.Menu(self.root, tearoff=0)
         self.runner_context_menu.add_command(label="Prenota Scommessa", command=self._book_selected_runner)
@@ -372,6 +376,10 @@ class PickfairApp:
         self.stake_var.trace_add('write', lambda *args: self._recalculate())
         stake_entry = ttk.Entry(stake_frame, textvariable=self.stake_var, width=10)
         stake_entry.pack(side=tk.LEFT, padx=5)
+        
+        # Note about minimum stake
+        ttk.Label(stake_frame, text="(min. 2 EUR per selezione)", 
+                  font=('Segoe UI', 8), foreground='gray').pack(side=tk.LEFT, padx=5)
         
         # Best price option
         options_frame = ttk.Frame(dutch_frame)
@@ -994,13 +1002,28 @@ class PickfairApp:
                 break
     
     def _on_runner_clicked(self, event):
-        """Handle runner row click to toggle selection."""
+        """Handle runner row click - check which column was clicked for quick betting."""
         item = self.runners_tree.identify_row(event.y)
         if not item:
             return
         
+        # Identify which column was clicked
+        column = self.runners_tree.identify_column(event.x)
+        # column is like '#1', '#2', etc. - #3 is back, #5 is lay
+        
         selection_id = item
         
+        # Quick bet on Back price column (#3)
+        if column == '#3':
+            self._quick_bet(selection_id, 'BACK')
+            return
+        
+        # Quick bet on Lay price column (#5)
+        if column == '#5':
+            self._quick_bet(selection_id, 'LAY')
+            return
+        
+        # Default: toggle selection for dutching
         if selection_id in self.selected_runners:
             del self.selected_runners[selection_id]
             values = list(self.runners_tree.item(item)['values'])
@@ -1034,6 +1057,160 @@ class PickfairApp:
                         break
         
         self._recalculate()
+    
+    def _quick_bet(self, selection_id, bet_type):
+        """Place a quick single bet on a runner at current price."""
+        if not self.client and not self.simulation_mode:
+            messagebox.showwarning("Attenzione", "Devi prima connetterti")
+            return
+        
+        if not self.current_market:
+            return
+        
+        # Get runner info
+        runner = None
+        for r in self.current_market['runners']:
+            if str(r['selectionId']) == selection_id:
+                runner = r
+                break
+        
+        if not runner:
+            return
+        
+        # Get price from treeview
+        values = list(self.runners_tree.item(selection_id)['values'])
+        try:
+            if bet_type == 'BACK':
+                price = float(str(values[2]).replace(',', '.')) if values[2] and values[2] != '-' else 0
+            else:
+                price = float(str(values[4]).replace(',', '.')) if values[4] and values[4] != '-' else 0
+        except (ValueError, IndexError):
+            price = 0
+        
+        if price <= 0:
+            messagebox.showwarning("Attenzione", "Quota non disponibile")
+            return
+        
+        # Get stake from entry
+        try:
+            stake = float(self.stake_var.get().replace(',', '.'))
+        except ValueError:
+            stake = 2.0
+        
+        # Minimum stake check
+        if stake < 2.0:
+            stake = 2.0
+        
+        # Confirmation dialog
+        tipo_text = "Back (Punta)" if bet_type == 'BACK' else "Lay (Banca)"
+        mode_text = "[SIMULAZIONE] " if self.simulation_mode else ""
+        
+        if not messagebox.askyesno("Conferma Scommessa Rapida",
+            f"{mode_text}Vuoi piazzare questa scommessa?\n\n"
+            f"Selezione: {runner['runnerName']}\n"
+            f"Tipo: {tipo_text}\n"
+            f"Quota: {price:.2f}\n"
+            f"Stake: {stake:.2f} EUR"):
+            return
+        
+        # Place the bet
+        if self.simulation_mode:
+            self._place_quick_simulation_bet(runner, bet_type, price, stake)
+        else:
+            self._place_quick_real_bet(runner, bet_type, price, stake)
+    
+    def _place_quick_simulation_bet(self, runner, bet_type, price, stake):
+        """Place a quick simulated bet."""
+        try:
+            # Calculate P/L
+            if bet_type == 'BACK':
+                profit = stake * (price - 1)
+                liability = stake
+            else:
+                profit = stake
+                liability = stake * (price - 1)
+            
+            # Check balance
+            settings = self.db.get_simulation_settings()
+            current_balance = settings.get('virtual_balance', 10000.0)
+            
+            if liability > current_balance:
+                messagebox.showerror("Errore Simulazione", 
+                    f"Saldo virtuale insufficiente.\n"
+                    f"Saldo: {format_currency(current_balance)}\n"
+                    f"Richiesto: {format_currency(liability)}")
+                return
+            
+            # Deduct from virtual balance and increment bet count
+            new_balance = current_balance - liability
+            self.db.increment_simulation_bet_count(new_balance)
+            
+            # Save bet
+            self.db.save_simulation_bet(
+                event_name=self.current_market.get('eventName', 'Quick Bet'),
+                market_id=self.current_market['marketId'],
+                market_name=self.current_market.get('marketName', ''),
+                side=bet_type,
+                selection_id=str(runner['selectionId']),
+                selection_name=runner['runnerName'],
+                price=price,
+                stake=stake,
+                status='MATCHED'
+            )
+            
+            messagebox.showinfo("Simulazione", 
+                f"Scommessa simulata piazzata!\n\n"
+                f"{runner['runnerName']} @ {price:.2f}\n"
+                f"Stake: {format_currency(stake)}\n"
+                f"Nuovo Saldo: {format_currency(new_balance)}")
+            
+        except Exception as e:
+            messagebox.showerror("Errore", str(e))
+    
+    def _place_quick_real_bet(self, runner, bet_type, price, stake):
+        """Place a quick real bet via Betfair API."""
+        def place_thread():
+            try:
+                result = self.client.place_bet(
+                    market_id=self.current_market['marketId'],
+                    selection_id=runner['selectionId'],
+                    side=bet_type,
+                    price=price,
+                    size=stake,
+                    persistence_type='LAPSE'
+                )
+                
+                self.root.after(0, lambda: self._on_quick_bet_result(result, runner, bet_type, price, stake))
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Errore", str(e)))
+        
+        threading.Thread(target=place_thread, daemon=True).start()
+    
+    def _on_quick_bet_result(self, result, runner, bet_type, price, stake):
+        """Handle quick bet result."""
+        if result.get('status') == 'SUCCESS':
+            matched = sum(r.get('sizeMatched', 0) for r in result.get('instructionReports', []))
+            
+            # Save to database
+            self.db.save_bet(
+                event_name=self.current_market.get('eventName', ''),
+                market_id=self.current_market['marketId'],
+                market_name=self.current_market.get('marketName', ''),
+                bet_type=bet_type,
+                selections=runner['runnerName'],
+                total_stake=stake,
+                potential_profit=stake * (price - 1) if bet_type == 'BACK' else stake,
+                status='MATCHED' if matched > 0 else 'UNMATCHED'
+            )
+            
+            messagebox.showinfo("Successo", 
+                f"Scommessa piazzata!\n\n"
+                f"{runner['runnerName']} @ {price:.2f}\n"
+                f"Importo matchato: {format_currency(matched)}")
+            
+            self._update_balance()
+        else:
+            messagebox.showwarning("Attenzione", f"Stato: {result.get('status')}")
     
     def _set_bet_type(self, bet_type):
         """Set the bet type and update button colors."""
@@ -1549,15 +1726,42 @@ class PickfairApp:
         for i in range(4):
             stats_frame.columnconfigure(i, weight=1)
         
-        # Refresh button
+        # Refresh button - fetch data in background, update UI on main thread
         def refresh_dashboard():
-            try:
-                funds = self.client.get_account_funds()
-                self.account_data = funds
-                dialog.destroy()
-                self._show_dashboard()
-            except Exception as e:
-                messagebox.showerror("Errore", str(e))
+            def fetch_data():
+                try:
+                    funds = self.client.get_account_funds()
+                    self.account_data = funds
+                    daily_pl = self.db.get_today_profit_loss()
+                    active_count = self.db.get_active_bets_count()
+                    
+                    # Schedule UI update on main thread
+                    self.root.after(0, lambda: update_ui(funds, daily_pl, active_count))
+                except Exception as e:
+                    self.root.after(0, lambda: messagebox.showerror("Errore", str(e)))
+            
+            def update_ui(funds, daily_pl, active_count):
+                if not dialog.winfo_exists():
+                    return
+                
+                for widget in stats_frame.winfo_children():
+                    widget.destroy()
+                
+                create_stat_card(stats_frame, "Saldo Disponibile", 
+                                f"{funds.get('available', 0):.2f} EUR", 
+                                "Fondi disponibili per scommettere", 0)
+                create_stat_card(stats_frame, "Esposizione", 
+                                f"{abs(funds.get('exposure', 0)):.2f} EUR", 
+                                "Responsabilita corrente", 1)
+                pl_text = f"+{daily_pl:.2f}" if daily_pl >= 0 else f"{daily_pl:.2f}"
+                create_stat_card(stats_frame, "P/L Oggi", 
+                                f"{pl_text} EUR", 
+                                "Profitto/Perdita giornaliero", 2)
+                create_stat_card(stats_frame, "Scommesse Attive", 
+                                str(active_count), 
+                                "In attesa di risultato", 3)
+            
+            threading.Thread(target=fetch_data, daemon=True).start()
         
         ttk.Button(main_frame, text="Aggiorna", command=refresh_dashboard).pack(anchor=tk.E, pady=10)
         
