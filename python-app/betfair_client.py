@@ -510,8 +510,8 @@ class BetfairClient:
             raise Exception("Non connesso a Betfair")
         
         for inst in instructions:
-            if inst['side'] == 'BACK' and inst['size'] < 2.0:
-                raise Exception(f"Puntata minima BACK: 2.00 EUR (richiesto: {inst['size']:.2f})")
+            if inst['side'] == 'BACK' and inst['size'] < 1.0:
+                raise Exception(f"Puntata minima BACK: 1.00 EUR (richiesto: {inst['size']:.2f})")
         
         limit_orders = []
         for inst in instructions:

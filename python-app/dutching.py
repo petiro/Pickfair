@@ -6,7 +6,7 @@ Calculates optimal stake distribution for equal profit on selected outcomes.
 from typing import List, Dict, Tuple
 
 # Italian regulations
-MIN_BACK_STAKE = 2.00  # EUR
+MIN_BACK_STAKE = 1.00  # EUR - Italian regulatory minimum
 MAX_WINNINGS = 10000.00  # EUR
 
 def calculate_dutching_stakes(

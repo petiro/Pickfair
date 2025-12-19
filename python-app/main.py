@@ -378,7 +378,7 @@ class PickfairApp:
         stake_entry.pack(side=tk.LEFT, padx=5)
         
         # Note about minimum stake
-        ttk.Label(stake_frame, text="(min. 2 EUR per selezione)", 
+        ttk.Label(stake_frame, text="(min. 1 EUR per selezione)", 
                   font=('Segoe UI', 8), foreground='gray').pack(side=tk.LEFT, padx=5)
         
         # Best price option
@@ -650,7 +650,8 @@ class PickfairApp:
                 events = self.client.get_football_events()
                 self.root.after(0, lambda: self._display_events(events))
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Errore", f"Errore caricamento partite: {e}"))
+                err_msg = str(e)
+                self.root.after(0, lambda msg=err_msg: messagebox.showerror("Errore", f"Errore caricamento partite: {msg}"))
         
         threading.Thread(target=fetch, daemon=True).start()
     
@@ -793,7 +794,8 @@ class PickfairApp:
                 markets = self.client.get_available_markets(event_id)
                 self.root.after(0, lambda: self._display_available_markets(markets))
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Errore", f"Errore caricamento mercati: {e}"))
+                err_msg = str(e)
+                self.root.after(0, lambda msg=err_msg: messagebox.showerror("Errore", f"Errore caricamento mercati: {msg}"))
         
         threading.Thread(target=fetch, daemon=True).start()
     
@@ -838,7 +840,8 @@ class PickfairApp:
                 market = self.client.get_market_with_prices(market_id)
                 self.root.after(0, lambda: self._display_market(market))
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Errore", f"Mercato non disponibile: {e}"))
+                err_msg = str(e)
+                self.root.after(0, lambda msg=err_msg: messagebox.showerror("Errore", f"Mercato non disponibile: {msg}"))
         
         threading.Thread(target=fetch, daemon=True).start()
     
@@ -2027,7 +2030,8 @@ class PickfairApp:
                 else:
                     cashout_btn.config(state='normal')
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Errore", f"Impossibile caricare posizioni: {e}"))
+                err_msg = str(e)
+                self.root.after(0, lambda msg=err_msg: messagebox.showerror("Errore", f"Impossibile caricare posizioni: {msg}"))
         
         def do_cashout():
             """Execute cashout for selected position."""
@@ -2296,8 +2300,8 @@ class PickfairApp:
                 target = float(target_var.get().replace(',', '.'))
                 stake = float(stake_var.get().replace(',', '.'))
                 
-                if stake < 2.0 and side_var.get() == 'BACK':
-                    messagebox.showerror("Errore", "Stake minimo BACK: 2.00 EUR")
+                if stake < 1.0 and side_var.get() == 'BACK':
+                    messagebox.showerror("Errore", "Stake minimo BACK: 1.00 EUR")
                     return
                 
                 self.db.save_booking(
