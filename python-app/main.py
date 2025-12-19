@@ -192,11 +192,11 @@ class PickfairApp:
         search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         search_entry.pack(fill=tk.X)
         
-        # Auto-refresh controls
+        # Auto-refresh controls (in seconds for faster updates)
         auto_refresh_frame = ttk.Frame(events_frame)
         auto_refresh_frame.pack(fill=tk.X, pady=(5, 5))
         
-        self.auto_refresh_var = tk.BooleanVar(value=False)
+        self.auto_refresh_var = tk.BooleanVar(value=True)  # Enabled by default
         self.auto_refresh_check = ttk.Checkbutton(
             auto_refresh_frame,
             text="Auto-refresh ogni",
@@ -205,18 +205,18 @@ class PickfairApp:
         )
         self.auto_refresh_check.pack(side=tk.LEFT)
         
-        self.auto_refresh_interval_var = tk.StringVar(value="1")
+        self.auto_refresh_interval_var = tk.StringVar(value="30")  # 30 seconds default
         self.auto_refresh_interval = ttk.Combobox(
             auto_refresh_frame,
             textvariable=self.auto_refresh_interval_var,
-            values=["1", "2", "5", "10", "15", "30"],
+            values=["15", "30", "60", "120", "300"],  # Seconds: 15s, 30s, 1m, 2m, 5m
             state='readonly',
             width=4
         )
         self.auto_refresh_interval.pack(side=tk.LEFT, padx=2)
         self.auto_refresh_interval.bind('<<ComboboxSelected>>', self._on_auto_refresh_interval_change)
         
-        ttk.Label(auto_refresh_frame, text="min").pack(side=tk.LEFT)
+        ttk.Label(auto_refresh_frame, text="sec").pack(side=tk.LEFT)
         
         self.auto_refresh_status = ttk.Label(auto_refresh_frame, text="", foreground='green')
         self.auto_refresh_status.pack(side=tk.LEFT, padx=10)
@@ -1006,16 +1006,15 @@ class PickfairApp:
             self._stop_auto_refresh()
     
     def _start_auto_refresh(self):
-        """Start auto-refresh timer."""
+        """Start auto-refresh timer (in seconds)."""
         if not self.client:
             self.auto_refresh_var.set(False)
-            messagebox.showwarning("Attenzione", "Connettiti prima a Betfair")
-            return
+            return  # Silently disable if not connected
         
         self._stop_auto_refresh()  # Stop any existing timer
         
-        interval_min = int(self.auto_refresh_interval_var.get())
-        interval_ms = interval_min * 60 * 1000
+        interval_sec = int(self.auto_refresh_interval_var.get())
+        interval_ms = interval_sec * 1000  # Convert seconds to milliseconds
         
         def do_refresh():
             if self.client and self.auto_refresh_var.get():
