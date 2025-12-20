@@ -941,6 +941,54 @@ class PickfairApp:
         # Auto-enable refresh on connect
         self.auto_refresh_var.set(True)
         self._start_auto_refresh()
+        
+        # Start session keep-alive to prevent disconnection
+        self._start_session_keepalive()
+    
+    def _start_session_keepalive(self):
+        """Start periodic session keep-alive to prevent timeout."""
+        self.keepalive_id = None
+        
+        def keepalive():
+            if self.client:
+                try:
+                    # Simple API call to keep session alive
+                    self.client.get_account_balance()
+                except Exception as e:
+                    print(f"Keepalive failed: {e}")
+                    # Try to re-login silently if session expired
+                    self._try_silent_relogin()
+            
+            # Schedule next keepalive (every 10 minutes)
+            if self.client:
+                self.keepalive_id = self.root.after(600000, keepalive)
+        
+        # First keepalive after 10 minutes
+        self.keepalive_id = self.root.after(600000, keepalive)
+    
+    def _stop_session_keepalive(self):
+        """Stop session keep-alive."""
+        if hasattr(self, 'keepalive_id') and self.keepalive_id:
+            self.root.after_cancel(self.keepalive_id)
+            self.keepalive_id = None
+    
+    def _try_silent_relogin(self):
+        """Try to re-login silently if session expired."""
+        settings = self.db.get_settings()
+        password = settings.get('password')
+        
+        if password and self.client:
+            try:
+                result = self.client.login(password)
+                self.db.save_session(result['session_token'], result['expiry'])
+                print("Session renewed successfully")
+            except Exception as e:
+                print(f"Silent relogin failed: {e}")
+                # Show notification to user
+                self.root.after(0, lambda: messagebox.showwarning(
+                    "Sessione Scaduta", 
+                    "La sessione è scaduta. Riconnettiti manualmente."
+                ))
     
     def _on_connection_error(self, error):
         """Handle connection error."""
@@ -952,6 +1000,7 @@ class PickfairApp:
     def _disconnect(self):
         """Disconnect from Betfair."""
         self._stop_auto_refresh()
+        self._stop_session_keepalive()
         self.auto_refresh_var.set(False)
         
         if self.client:
