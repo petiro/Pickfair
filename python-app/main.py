@@ -462,6 +462,10 @@ class PickfairApp:
                                             command=self._do_market_cashout)
         self.market_cashout_btn.pack(side=tk.LEFT, padx=2)
         
+        # Auto-confirm checkbox (skip confirmation dialog)
+        self.auto_cashout_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cashout_btn_frame, text="Auto", variable=self.auto_cashout_var).pack(side=tk.LEFT, padx=5)
+        
         self.market_live_tracking_var = tk.BooleanVar(value=True)  # Auto-enabled by default
         ttk.Checkbutton(cashout_btn_frame, text="Live", variable=self.market_live_tracking_var,
                        command=self._toggle_market_live_tracking).pack(side=tk.LEFT, padx=5)
@@ -470,6 +474,9 @@ class PickfairApp:
         self.market_live_status.pack(side=tk.LEFT)
         
         ttk.Button(cashout_btn_frame, text="Aggiorna", command=self._update_market_cashout_positions).pack(side=tk.RIGHT, padx=2)
+        
+        # Bind double-click on cashout tree to cashout single position
+        self.market_cashout_tree.bind('<Double-1>', self._do_single_cashout)
         
         # Store live tracking timer ID and fetch state
         self.market_live_tracking_id = None
@@ -682,6 +689,13 @@ class PickfairApp:
         self.market_cashout_fetch_cancelled = True
         self.market_live_status.config(text="", foreground='gray')
     
+    def _do_single_cashout(self, event):
+        """Execute cashout for double-clicked position."""
+        item = self.market_cashout_tree.identify_row(event.y)
+        if item:
+            self.market_cashout_tree.selection_set(item)
+            self._do_market_cashout()
+    
     def _do_market_cashout(self):
         """Execute cashout for selected position in market view."""
         selected = self.market_cashout_tree.selection()
@@ -695,14 +709,19 @@ class PickfairApp:
                 continue
             
             info = pos['cashout_info']
-            confirm = messagebox.askyesno(
-                "Conferma Cashout",
-                f"Eseguire cashout?\n\n"
-                f"Selezione: {pos['runner_name']}\n"
-                f"Tipo: {info['cashout_side']} @ {info['current_price']:.2f}\n"
-                f"Stake: {info['cashout_stake']:.2f}\n"
-                f"Profitto garantito: {info['green_up']:+.2f}"
-            )
+            
+            # Check if auto-confirm is enabled
+            if self.auto_cashout_var.get():
+                confirm = True
+            else:
+                confirm = messagebox.askyesno(
+                    "Conferma Cashout",
+                    f"Eseguire cashout?\n\n"
+                    f"Selezione: {pos['runner_name']}\n"
+                    f"Tipo: {info['cashout_side']} @ {info['current_price']:.2f}\n"
+                    f"Stake: {info['cashout_stake']:.2f}\n"
+                    f"Profitto garantito: {info['green_up']:+.2f}"
+                )
             
             if confirm:
                 try:
