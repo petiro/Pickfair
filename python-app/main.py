@@ -3184,61 +3184,99 @@ class PickfairApp:
             threading.Thread(target=fetch_dialogs, daemon=True).start()
         
         def show_chat_selector(chat_list):
-            """Show dialog to select chats to monitor."""
+            """Show dialog to select chats to monitor with checkboxes."""
             status_label.config(text=f"Trovate {len(chat_list)} chat")
             
             sel_dialog = tk.Toplevel(dialog)
             sel_dialog.title("Seleziona Chat da Monitorare")
-            sel_dialog.geometry("500x400")
+            sel_dialog.geometry("550x450")
             sel_dialog.transient(dialog)
             sel_dialog.grab_set()
             
             sel_frame = ttk.Frame(sel_dialog, padding=20)
             sel_frame.pack(fill=tk.BOTH, expand=True)
             
-            ttk.Label(sel_frame, text="Seleziona le chat da monitorare (multi-selezione con Ctrl+click):", 
-                     font=('Segoe UI', 10)).pack(anchor=tk.W, pady=(0, 10))
+            ttk.Label(sel_frame, text="Seleziona le chat da monitorare:", 
+                     font=('Segoe UI', 10, 'bold')).pack(anchor=tk.W, pady=(0, 10))
             
-            # Treeview for selection
-            sel_columns = ('name', 'type', 'id')
-            sel_tree = ttk.Treeview(sel_frame, columns=sel_columns, show='headings', 
-                                    height=12, selectmode='extended')
-            sel_tree.heading('name', text='Nome')
-            sel_tree.heading('type', text='Tipo')
-            sel_tree.heading('id', text='ID')
-            sel_tree.column('name', width=250)
-            sel_tree.column('type', width=80)
-            sel_tree.column('id', width=100)
+            # Container with scrollbar
+            container = ttk.Frame(sel_frame)
+            container.pack(fill=tk.BOTH, expand=True)
             
-            scrollbar = ttk.Scrollbar(sel_frame, orient=tk.VERTICAL, command=sel_tree.yview)
-            sel_tree.configure(yscrollcommand=scrollbar.set)
-            sel_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            canvas = tk.Canvas(container)
+            scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
+            scrollable_frame = ttk.Frame(canvas)
+            
+            scrollable_frame.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+            
+            canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+            canvas.configure(yscrollcommand=scrollbar.set)
+            
+            canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
             
+            # Enable mouse wheel scrolling
+            def on_mousewheel(event):
+                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            canvas.bind_all("<MouseWheel>", on_mousewheel)
+            
+            # Store checkbox variables
+            check_vars = {}
+            
             for chat in chat_list:
-                sel_tree.insert('', tk.END, iid=str(chat['id']), values=(
-                    chat['name'], chat['type'], chat['id']
-                ))
+                row_frame = ttk.Frame(scrollable_frame)
+                row_frame.pack(fill=tk.X, pady=2)
+                
+                var = tk.BooleanVar(value=False)
+                check_vars[chat['id']] = {'var': var, 'name': chat['name']}
+                
+                cb = ttk.Checkbutton(row_frame, variable=var)
+                cb.pack(side=tk.LEFT, padx=(0, 5))
+                
+                # Type badge
+                type_text = chat['type']
+                type_color = '#007bff' if type_text == 'Canale' else '#28a745' if type_text == 'Gruppo' else '#6c757d'
+                type_label = tk.Label(row_frame, text=type_text, bg=type_color, fg='white', 
+                                      font=('Segoe UI', 8), padx=5, pady=1)
+                type_label.pack(side=tk.LEFT, padx=(0, 10))
+                
+                name_label = ttk.Label(row_frame, text=chat['name'], font=('Segoe UI', 10))
+                name_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            
+            def select_all():
+                for data in check_vars.values():
+                    data['var'].set(True)
+            
+            def deselect_all():
+                for data in check_vars.values():
+                    data['var'].set(False)
             
             def add_selected():
-                selected = sel_tree.selection()
-                for item_id in selected:
-                    values = sel_tree.item(item_id)['values']
-                    if values:
-                        chat_name = values[0]
-                        chat_id = values[2]
-                        self.db.add_telegram_chat(str(chat_id), chat_name)
+                count = 0
+                for chat_id, data in check_vars.items():
+                    if data['var'].get():
+                        self.db.add_telegram_chat(str(chat_id), data['name'])
+                        count += 1
                 
+                canvas.unbind_all("<MouseWheel>")
                 sel_dialog.destroy()
                 refresh_tree()
-                messagebox.showinfo("Aggiunto", f"Aggiunte {len(selected)} chat alla lista monitorata")
+                if count > 0:
+                    messagebox.showinfo("Aggiunto", f"Aggiunte {count} chat alla lista monitorata")
             
             btn_sel_frame = ttk.Frame(sel_frame)
-            btn_sel_frame.pack(fill=tk.X, pady=10)
+            btn_sel_frame.pack(fill=tk.X, pady=(15, 0))
+            
+            ttk.Button(btn_sel_frame, text="Seleziona Tutti", command=select_all).pack(side=tk.LEFT, padx=2)
+            ttk.Button(btn_sel_frame, text="Deseleziona Tutti", command=deselect_all).pack(side=tk.LEFT, padx=2)
             
             tk.Button(btn_sel_frame, text="Aggiungi Selezionate", bg='#28a745', fg='white',
-                     font=('Segoe UI', 10, 'bold'), command=add_selected).pack(side=tk.LEFT, padx=5)
-            ttk.Button(btn_sel_frame, text="Annulla", command=sel_dialog.destroy).pack(side=tk.LEFT)
+                     font=('Segoe UI', 10, 'bold'), command=add_selected).pack(side=tk.RIGHT, padx=5)
+            ttk.Button(btn_sel_frame, text="Annulla", 
+                      command=lambda: [canvas.unbind_all("<MouseWheel>"), sel_dialog.destroy()]).pack(side=tk.RIGHT)
         
         tk.Button(btn_frame, text="Carica Chat da Telegram", bg='#007bff', fg='white',
                  font=('Segoe UI', 10, 'bold'), command=load_telegram_chats).pack(side=tk.LEFT, padx=5)
