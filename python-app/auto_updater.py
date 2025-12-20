@@ -164,14 +164,53 @@ def download_update(download_url, progress_callback=None):
         return None
 
 
-def install_update(update_path):
+def install_update(update_path, current_exe_path=None):
     """
-    Install the downloaded update.
-    For .exe files, run installer. For .zip, extract and replace.
+    Install the downloaded update and restart the app.
+    For .exe files, replace current exe and restart.
     """
     try:
-        if update_path.endswith('.exe'):
-            # Run the installer
+        if update_path.endswith('.exe') and current_exe_path:
+            # Get the directory of current executable
+            app_dir = os.path.dirname(current_exe_path)
+            new_exe_name = os.path.basename(current_exe_path)
+            backup_path = current_exe_path + ".backup"
+            
+            # Create a batch script to:
+            # 1. Wait for current app to close
+            # 2. Replace the exe
+            # 3. Start new version
+            # 4. Delete itself
+            batch_content = f'''@echo off
+echo Aggiornamento in corso...
+timeout /t 2 /nobreak > nul
+if exist "{backup_path}" del /f "{backup_path}"
+if exist "{current_exe_path}" move /y "{current_exe_path}" "{backup_path}"
+move /y "{update_path}" "{current_exe_path}"
+if exist "{current_exe_path}" (
+    echo Avvio nuova versione...
+    start "" "{current_exe_path}"
+    if exist "{backup_path}" del /f "{backup_path}"
+) else (
+    echo Errore aggiornamento, ripristino backup...
+    if exist "{backup_path}" move /y "{backup_path}" "{current_exe_path}"
+)
+del "%~f0"
+'''
+            
+            # Save batch script in temp folder
+            batch_path = os.path.join(tempfile.gettempdir(), "pickfair_update.bat")
+            with open(batch_path, 'w') as f:
+                f.write(batch_content)
+            
+            # Run the batch script (will wait for app to close)
+            # CREATE_NO_WINDOW = 0x08000000 (Windows constant to hide console)
+            CREATE_NO_WINDOW = 0x08000000
+            subprocess.Popen(['cmd', '/c', batch_path], creationflags=CREATE_NO_WINDOW)
+            return True
+            
+        elif update_path.endswith('.exe'):
+            # No current exe path, just run the downloaded one
             subprocess.Popen([update_path], shell=True)
             return True
         elif update_path.endswith('.zip'):
@@ -191,26 +230,42 @@ def install_update(update_path):
         return False
 
 
+def get_current_exe_path():
+    """Get the path of the current executable."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled exe
+        return sys.executable
+    else:
+        # Running as script (development)
+        return None
+
+
 class UpdateDialog:
-    """Tkinter dialog for showing update notification."""
+    """Tkinter dialog for showing update notification with auto-install."""
     
     def __init__(self, parent, update_info):
         import tkinter as tk
-        from tkinter import ttk
+        from tkinter import ttk, messagebox
         
+        self.tk = tk
+        self.ttk = ttk
+        self.messagebox = messagebox
         self.result = None
         self.update_info = update_info
+        self.parent = parent
+        self.downloading = False
         
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Aggiornamento Disponibile")
-        self.dialog.geometry("450x350")
+        self.dialog.geometry("450x400")
         self.dialog.transient(parent)
         self.dialog.grab_set()
+        self.dialog.protocol("WM_DELETE_WINDOW", self._on_close)
         
         # Center on parent
         self.dialog.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() - 450) // 2
-        y = parent.winfo_y() + (parent.winfo_height() - 350) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - 400) // 2
         self.dialog.geometry(f"+{x}+{y}")
         
         frame = ttk.Frame(self.dialog, padding=20)
@@ -231,39 +286,129 @@ class UpdateDialog:
         notes_frame = ttk.LabelFrame(frame, text="Note di rilascio", padding=10)
         notes_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
-        notes_text = tk.Text(notes_frame, wrap=tk.WORD, height=8, font=('Segoe UI', 9))
+        notes_text = tk.Text(notes_frame, wrap=tk.WORD, height=6, font=('Segoe UI', 9))
         notes_text.insert('1.0', update_info.get('release_notes', 'Nessuna nota disponibile'))
         notes_text.config(state=tk.DISABLED)
         notes_text.pack(fill=tk.BOTH, expand=True)
         
+        # Progress bar (hidden initially)
+        self.progress_frame = ttk.Frame(frame)
+        self.progress_frame.pack(fill=tk.X, pady=10)
+        
+        self.progress_label = ttk.Label(self.progress_frame, text="")
+        self.progress_label.pack()
+        
+        self.progress_bar = ttk.Progressbar(self.progress_frame, mode='determinate', length=380)
+        self.progress_bar.pack(fill=tk.X, pady=5)
+        self.progress_bar.pack_forget()  # Hide initially
+        self.progress_label.pack_forget()
+        
         # Buttons
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill=tk.X, pady=(10, 0))
+        self.btn_frame = ttk.Frame(frame)
+        self.btn_frame.pack(fill=tk.X, pady=(10, 0))
         
-        download_btn = tk.Button(btn_frame, text="Scarica Aggiornamento", 
+        self.download_btn = tk.Button(self.btn_frame, text="Aggiorna Ora", 
                                 bg='#28a745', fg='white', font=('Segoe UI', 10, 'bold'),
-                                command=self._download)
-        download_btn.pack(side=tk.LEFT, padx=5)
+                                command=self._start_download)
+        self.download_btn.pack(side=tk.LEFT, padx=5)
         
-        later_btn = ttk.Button(btn_frame, text="Ricordamelo Dopo", 
+        self.manual_btn = ttk.Button(self.btn_frame, text="Scarica Manualmente", 
+                              command=self._manual_download)
+        self.manual_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.later_btn = ttk.Button(self.btn_frame, text="Dopo", 
                               command=self._later)
-        later_btn.pack(side=tk.LEFT, padx=5)
-        
-        skip_btn = ttk.Button(btn_frame, text="Salta Versione", 
-                             command=self._skip)
-        skip_btn.pack(side=tk.RIGHT, padx=5)
+        self.later_btn.pack(side=tk.RIGHT, padx=5)
     
-    def _download(self):
-        self.result = 'download'
+    def _on_close(self):
+        if not self.downloading:
+            self.dialog.destroy()
+    
+    def _start_download(self):
+        """Start automatic download and install."""
+        self.downloading = True
+        download_url = self.update_info.get('download_url')
+        
+        if not download_url or not download_url.endswith('.exe'):
+            # Fallback to manual download
+            self._manual_download()
+            return
+        
+        # Show progress
+        self.progress_label.config(text="Download in corso...")
+        self.progress_label.pack()
+        self.progress_bar.pack(fill=self.tk.X, pady=5)
+        self.progress_bar['value'] = 0
+        
+        # Disable buttons
+        self.download_btn.config(state=self.tk.DISABLED)
+        self.manual_btn.config(state=self.tk.DISABLED)
+        self.later_btn.config(state=self.tk.DISABLED)
+        
+        # Start download in thread
+        def do_download():
+            def progress_callback(downloaded, total):
+                if total > 0:
+                    percent = (downloaded / total) * 100
+                    mb_down = downloaded / (1024 * 1024)
+                    mb_total = total / (1024 * 1024)
+                    self.dialog.after(0, lambda: self._update_progress(percent, mb_down, mb_total))
+            
+            downloaded_path = download_update(download_url, progress_callback)
+            
+            if downloaded_path:
+                self.dialog.after(0, lambda: self._install_update(downloaded_path))
+            else:
+                self.dialog.after(0, self._download_failed)
+        
+        threading.Thread(target=do_download, daemon=True).start()
+    
+    def _update_progress(self, percent, mb_down, mb_total):
+        self.progress_bar['value'] = percent
+        self.progress_label.config(text=f"Download: {mb_down:.1f} MB / {mb_total:.1f} MB")
+    
+    def _install_update(self, downloaded_path):
+        self.progress_label.config(text="Installazione in corso...")
+        self.progress_bar['value'] = 100
+        
+        current_exe = get_current_exe_path()
+        
+        if current_exe:
+            # Auto install and restart
+            success = install_update(downloaded_path, current_exe)
+            if success:
+                self.result = 'installed'
+                self.progress_label.config(text="Riavvio in corso...")
+                self.dialog.after(1000, self._close_app)
+            else:
+                self._download_failed()
+        else:
+            # Development mode - just open folder
+            self.messagebox.showinfo("Download Completato", 
+                f"Aggiornamento scaricato in:\n{downloaded_path}\n\nSostituisci manualmente l'eseguibile.")
+            self.dialog.destroy()
+    
+    def _close_app(self):
+        """Close the application to allow update."""
+        self.dialog.destroy()
+        self.parent.destroy()
+        sys.exit(0)
+    
+    def _download_failed(self):
+        self.downloading = False
+        self.progress_label.config(text="Download fallito!")
+        self.download_btn.config(state=self.tk.NORMAL)
+        self.manual_btn.config(state=self.tk.NORMAL)
+        self.later_btn.config(state=self.tk.NORMAL)
+        self.messagebox.showerror("Errore", "Download fallito. Prova il download manuale.")
+    
+    def _manual_download(self):
+        self.result = 'manual'
         open_download_page(self.update_info['release_page'])
         self.dialog.destroy()
     
     def _later(self):
         self.result = 'later'
-        self.dialog.destroy()
-    
-    def _skip(self):
-        self.result = 'skip'
         self.dialog.destroy()
     
     def show(self):
