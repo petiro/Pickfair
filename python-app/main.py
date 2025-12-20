@@ -3089,7 +3089,7 @@ class PickfairApp:
         """Show dialog to manage monitored Telegram chats."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Gestisci Chat Telegram")
-        dialog.geometry("500x400")
+        dialog.geometry("600x500")
         dialog.transient(self.root)
         
         frame = ttk.Frame(dialog, padding=20)
@@ -3098,33 +3098,150 @@ class PickfairApp:
         ttk.Label(frame, text="Chat Monitorate", style='Title.TLabel').pack(anchor=tk.W)
         
         columns = ('chat_id', 'name', 'enabled')
-        tree = ttk.Treeview(frame, columns=columns, show='headings', height=10)
+        tree = ttk.Treeview(frame, columns=columns, show='headings', height=10, selectmode='extended')
         tree.heading('chat_id', text='Chat ID')
         tree.heading('name', text='Nome')
         tree.heading('enabled', text='Attivo')
+        tree.column('chat_id', width=120)
+        tree.column('name', width=300)
+        tree.column('enabled', width=60)
         tree.pack(fill=tk.BOTH, expand=True, pady=10)
         
-        chats = self.db.get_telegram_chats()
-        for chat in chats:
-            tree.insert('', tk.END, iid=str(chat['id']), values=(
-                chat['chat_id'],
-                chat.get('chat_name', ''),
-                'Si' if chat.get('enabled') else 'No'
-            ))
+        def refresh_tree():
+            tree.delete(*tree.get_children())
+            chats = self.db.get_telegram_chats()
+            for chat in chats:
+                tree.insert('', tk.END, iid=str(chat['id']), values=(
+                    chat['chat_id'],
+                    chat.get('chat_name', ''),
+                    'Si' if chat.get('enabled') else 'No'
+                ))
         
-        add_frame = ttk.Frame(frame)
-        add_frame.pack(fill=tk.X, pady=10)
+        refresh_tree()
         
-        ttk.Label(add_frame, text="Aggiungi Chat ID:").pack(side=tk.LEFT)
-        new_chat_var = tk.StringVar()
-        ttk.Entry(add_frame, textvariable=new_chat_var, width=20).pack(side=tk.LEFT, padx=5)
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=10)
         
-        def add_chat():
-            chat_id = new_chat_var.get().strip()
-            if chat_id:
-                self.db.add_telegram_chat(chat_id)
-                tree.insert('', tk.END, values=(chat_id, '', 'Si'))
-                new_chat_var.set('')
+        def load_telegram_chats():
+            """Load all chats from Telegram account."""
+            settings = self.db.get_telegram_settings()
+            if not settings or not settings.get('api_id') or not settings.get('api_hash'):
+                messagebox.showwarning("Attenzione", "Configura prima le credenziali Telegram")
+                return
+            
+            status_label.config(text="Connessione a Telegram...")
+            dialog.update()
+            
+            def fetch_dialogs():
+                try:
+                    from telethon.sync import TelegramClient
+                    from telethon.tl.types import Channel, Chat, User
+                    
+                    api_id = int(settings['api_id'])
+                    api_hash = settings['api_hash']
+                    phone = settings.get('phone_number', '')
+                    
+                    # Session file path
+                    import os
+                    session_path = os.path.join(os.environ.get('APPDATA', '.'), 'Pickfair', 'telegram_session')
+                    
+                    client = TelegramClient(session_path, api_id, api_hash)
+                    client.connect()
+                    
+                    if not client.is_user_authorized():
+                        # Need to authenticate
+                        dialog.after(0, lambda: self._telegram_auth_flow(client, phone, show_chat_selector))
+                        return
+                    
+                    # Get all dialogs
+                    dialogs = client.get_dialogs()
+                    chat_list = []
+                    
+                    for d in dialogs:
+                        entity = d.entity
+                        chat_type = 'unknown'
+                        
+                        if isinstance(entity, Channel):
+                            chat_type = 'Canale' if entity.broadcast else 'Gruppo'
+                        elif isinstance(entity, Chat):
+                            chat_type = 'Gruppo'
+                        elif isinstance(entity, User):
+                            chat_type = 'Bot' if entity.bot else 'Utente'
+                        
+                        chat_list.append({
+                            'id': d.id,
+                            'name': d.name or str(d.id),
+                            'type': chat_type
+                        })
+                    
+                    client.disconnect()
+                    dialog.after(0, lambda: show_chat_selector(chat_list))
+                    
+                except Exception as e:
+                    dialog.after(0, lambda: status_label.config(text=f"Errore: {str(e)[:50]}"))
+                    dialog.after(0, lambda: messagebox.showerror("Errore", f"Errore Telegram: {e}"))
+            
+            threading.Thread(target=fetch_dialogs, daemon=True).start()
+        
+        def show_chat_selector(chat_list):
+            """Show dialog to select chats to monitor."""
+            status_label.config(text=f"Trovate {len(chat_list)} chat")
+            
+            sel_dialog = tk.Toplevel(dialog)
+            sel_dialog.title("Seleziona Chat da Monitorare")
+            sel_dialog.geometry("500x400")
+            sel_dialog.transient(dialog)
+            sel_dialog.grab_set()
+            
+            sel_frame = ttk.Frame(sel_dialog, padding=20)
+            sel_frame.pack(fill=tk.BOTH, expand=True)
+            
+            ttk.Label(sel_frame, text="Seleziona le chat da monitorare (multi-selezione con Ctrl+click):", 
+                     font=('Segoe UI', 10)).pack(anchor=tk.W, pady=(0, 10))
+            
+            # Treeview for selection
+            sel_columns = ('name', 'type', 'id')
+            sel_tree = ttk.Treeview(sel_frame, columns=sel_columns, show='headings', 
+                                    height=12, selectmode='extended')
+            sel_tree.heading('name', text='Nome')
+            sel_tree.heading('type', text='Tipo')
+            sel_tree.heading('id', text='ID')
+            sel_tree.column('name', width=250)
+            sel_tree.column('type', width=80)
+            sel_tree.column('id', width=100)
+            
+            scrollbar = ttk.Scrollbar(sel_frame, orient=tk.VERTICAL, command=sel_tree.yview)
+            sel_tree.configure(yscrollcommand=scrollbar.set)
+            sel_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            for chat in chat_list:
+                sel_tree.insert('', tk.END, iid=str(chat['id']), values=(
+                    chat['name'], chat['type'], chat['id']
+                ))
+            
+            def add_selected():
+                selected = sel_tree.selection()
+                for item_id in selected:
+                    values = sel_tree.item(item_id)['values']
+                    if values:
+                        chat_name = values[0]
+                        chat_id = values[2]
+                        self.db.add_telegram_chat(str(chat_id), chat_name)
+                
+                sel_dialog.destroy()
+                refresh_tree()
+                messagebox.showinfo("Aggiunto", f"Aggiunte {len(selected)} chat alla lista monitorata")
+            
+            btn_sel_frame = ttk.Frame(sel_frame)
+            btn_sel_frame.pack(fill=tk.X, pady=10)
+            
+            tk.Button(btn_sel_frame, text="Aggiungi Selezionate", bg='#28a745', fg='white',
+                     font=('Segoe UI', 10, 'bold'), command=add_selected).pack(side=tk.LEFT, padx=5)
+            ttk.Button(btn_sel_frame, text="Annulla", command=sel_dialog.destroy).pack(side=tk.LEFT)
+        
+        tk.Button(btn_frame, text="Carica Chat da Telegram", bg='#007bff', fg='white',
+                 font=('Segoe UI', 10, 'bold'), command=load_telegram_chats).pack(side=tk.LEFT, padx=5)
         
         def remove_chat():
             selected = tree.selection()
@@ -3134,10 +3251,10 @@ class PickfairApp:
                     self.db.remove_telegram_chat(values[0])
                     tree.delete(item)
         
-        ttk.Button(add_frame, text="Aggiungi", command=add_chat).pack(side=tk.LEFT, padx=5)
-        ttk.Button(add_frame, text="Rimuovi", command=remove_chat).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Rimuovi Selezionate", command=remove_chat).pack(side=tk.LEFT, padx=5)
         
-        ttk.Label(frame, text="Suggerimento: Per trovare l'ID di un gruppo, inoltra un messaggio a @userinfobot").pack(anchor=tk.W)
+        status_label = ttk.Label(frame, text="")
+        status_label.pack(anchor=tk.W, pady=5)
     
     def _show_telegram_signals(self):
         """Show received Telegram signals."""
@@ -3246,6 +3363,114 @@ class PickfairApp:
             self.telegram_listener = None
         self.telegram_status = 'STOPPED'
         messagebox.showinfo("Telegram", "Listener Telegram fermato")
+    
+    def _telegram_auth_flow(self, client, phone, callback):
+        """Handle Telegram authentication flow for loading chats."""
+        auth_dialog = tk.Toplevel(self.root)
+        auth_dialog.title("Autenticazione Telegram")
+        auth_dialog.geometry("400x250")
+        auth_dialog.transient(self.root)
+        auth_dialog.grab_set()
+        
+        frame = ttk.Frame(auth_dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text=f"Inserisci il codice inviato a {phone}", 
+                 font=('Segoe UI', 11)).pack(pady=10)
+        
+        code_var = tk.StringVar()
+        code_entry = ttk.Entry(frame, textvariable=code_var, width=20, font=('Segoe UI', 14))
+        code_entry.pack(pady=10)
+        code_entry.focus()
+        
+        ttk.Label(frame, text="Password 2FA (se attiva):").pack()
+        password_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=password_var, width=20, show='*').pack(pady=5)
+        
+        status_label = ttk.Label(frame, text="")
+        status_label.pack(pady=5)
+        
+        def do_send_code():
+            status_label.config(text="Invio codice...")
+            auth_dialog.update()
+            
+            def auth_thread():
+                try:
+                    # Send code request
+                    client.send_code_request(phone)
+                    auth_dialog.after(0, lambda: status_label.config(text="Codice inviato! Inseriscilo sopra."))
+                except Exception as e:
+                    auth_dialog.after(0, lambda: status_label.config(text=f"Errore: {e}"))
+            
+            threading.Thread(target=auth_thread, daemon=True).start()
+        
+        def submit_code():
+            code = code_var.get().strip()
+            if not code:
+                status_label.config(text="Inserisci il codice")
+                return
+            
+            status_label.config(text="Verifica in corso...")
+            auth_dialog.update()
+            
+            def verify_thread():
+                try:
+                    client.sign_in(phone, code)
+                    
+                    # Check if 2FA is needed
+                    if not client.is_user_authorized():
+                        password = password_var.get()
+                        if password:
+                            client.sign_in(password=password)
+                    
+                    if client.is_user_authorized():
+                        # Get dialogs
+                        from telethon.tl.types import Channel, Chat, User
+                        dialogs = client.get_dialogs()
+                        chat_list = []
+                        
+                        for d in dialogs:
+                            entity = d.entity
+                            chat_type = 'unknown'
+                            
+                            if isinstance(entity, Channel):
+                                chat_type = 'Canale' if entity.broadcast else 'Gruppo'
+                            elif isinstance(entity, Chat):
+                                chat_type = 'Gruppo'
+                            elif isinstance(entity, User):
+                                chat_type = 'Bot' if entity.bot else 'Utente'
+                            
+                            chat_list.append({
+                                'id': d.id,
+                                'name': d.name or str(d.id),
+                                'type': chat_type
+                            })
+                        
+                        client.disconnect()
+                        auth_dialog.after(0, auth_dialog.destroy)
+                        auth_dialog.after(100, lambda: callback(chat_list))
+                    else:
+                        auth_dialog.after(0, lambda: status_label.config(text="Autenticazione fallita"))
+                        
+                except Exception as e:
+                    err_msg = str(e)
+                    if '2FA' in err_msg.upper() or 'password' in err_msg.lower():
+                        auth_dialog.after(0, lambda: status_label.config(text="Inserisci la password 2FA"))
+                    else:
+                        auth_dialog.after(0, lambda: status_label.config(text=f"Errore: {err_msg[:40]}"))
+            
+            threading.Thread(target=verify_thread, daemon=True).start()
+        
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Button(btn_frame, text="Invia Codice", command=do_send_code).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Verifica", bg='#28a745', fg='white',
+                 font=('Segoe UI', 10, 'bold'), command=submit_code).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Annulla", command=auth_dialog.destroy).pack(side=tk.RIGHT)
+        
+        # Automatically send code
+        do_send_code()
     
     def _show_telegram_auth(self):
         """Show Telegram authentication dialog for entering code."""
