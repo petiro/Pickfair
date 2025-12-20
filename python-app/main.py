@@ -279,14 +279,6 @@ class PickfairApp:
         )
         self.stream_check.pack(side=tk.LEFT)
         
-        self.refresh_prices_btn = ttk.Button(
-            stream_frame, 
-            text="Aggiorna Quote", 
-            command=self._refresh_prices,
-            state=tk.DISABLED
-        )
-        self.refresh_prices_btn.pack(side=tk.LEFT, padx=10)
-        
         # Dutching modal button
         self.dutch_modal_btn = tk.Button(
             stream_frame, 
@@ -1177,7 +1169,6 @@ class PickfairApp:
         """Load all available markets for an event."""
         self.runners_tree.delete(*self.runners_tree.get_children())
         self.market_combo['values'] = []
-        self.refresh_prices_btn.config(state=tk.DISABLED)
         
         def fetch():
             try:
@@ -1239,7 +1230,6 @@ class PickfairApp:
         """Display market runners."""
         self.current_market = market
         self.runners_tree.delete(*self.runners_tree.get_children())
-        self.refresh_prices_btn.config(state=tk.NORMAL)
         
         # Update market status
         self.market_status = market.get('status', 'OPEN')
