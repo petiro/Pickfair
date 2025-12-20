@@ -372,7 +372,7 @@ class PickfairApp:
         stake_frame.pack(fill=tk.X, pady=5)
         
         ttk.Label(stake_frame, text="Stake Totale (EUR):").pack(side=tk.LEFT)
-        self.stake_var = tk.StringVar(value='10.00')
+        self.stake_var = tk.StringVar(value='1.00')
         self.stake_var.trace_add('write', lambda *args: self._recalculate())
         stake_entry = ttk.Entry(stake_frame, textvariable=self.stake_var, width=10)
         stake_entry.pack(side=tk.LEFT, padx=5)
@@ -413,31 +413,15 @@ class PickfairApp:
         self.place_btn = ttk.Button(btn_frame, text="Piazza Scommesse", command=self._place_bets, state=tk.DISABLED)
         self.place_btn.pack(side=tk.RIGHT)
         
-        # Market Info Section
-        info_frame = ttk.LabelFrame(parent, text="Info Mercato", padding=5)
-        info_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        # Separator before cashout section
+        ttk.Separator(dutch_frame, orient='horizontal').pack(fill=tk.X, pady=10)
         
-        # Market details labels
-        self.market_info_name = ttk.Label(info_frame, text="Evento: -", font=('Segoe UI', 9))
-        self.market_info_name.pack(anchor=tk.W, pady=2)
-        
-        self.market_info_type = ttk.Label(info_frame, text="Mercato: -", font=('Segoe UI', 9))
-        self.market_info_type.pack(anchor=tk.W, pady=2)
-        
-        self.market_info_status = ttk.Label(info_frame, text="Stato: -", font=('Segoe UI', 9))
-        self.market_info_status.pack(anchor=tk.W, pady=2)
-        
-        self.market_info_matched = ttk.Label(info_frame, text="Volumi: -", font=('Segoe UI', 9))
-        self.market_info_matched.pack(anchor=tk.W, pady=2)
-        
-        ttk.Separator(info_frame, orient='horizontal').pack(fill=tk.X, pady=5)
-        
-        # Cashout section in market view
-        ttk.Label(info_frame, text="Cashout Mercato Corrente", style='Header.TLabel').pack(anchor=tk.W, pady=(5, 2))
+        # Cashout section in main panel
+        ttk.Label(dutch_frame, text="Cashout", style='Header.TLabel').pack(anchor=tk.W, pady=(5, 2))
         
         # Cashout positions list
         cashout_cols = ('sel', 'tipo', 'p/l')
-        self.market_cashout_tree = ttk.Treeview(info_frame, columns=cashout_cols, show='headings', height=4)
+        self.market_cashout_tree = ttk.Treeview(dutch_frame, columns=cashout_cols, show='headings', height=4)
         self.market_cashout_tree.heading('sel', text='Selezione')
         self.market_cashout_tree.heading('tipo', text='Tipo')
         self.market_cashout_tree.heading('p/l', text='P/L')
@@ -451,7 +435,7 @@ class PickfairApp:
         self.market_cashout_tree.pack(fill=tk.X, pady=2)
         
         # Cashout buttons
-        cashout_btn_frame = ttk.Frame(info_frame)
+        cashout_btn_frame = ttk.Frame(dutch_frame)
         cashout_btn_frame.pack(fill=tk.X, pady=5)
         
         self.market_cashout_btn = tk.Button(cashout_btn_frame, text="CASHOUT", bg='#28a745', fg='white',
@@ -473,29 +457,6 @@ class PickfairApp:
         self.market_cashout_fetch_in_progress = False
         self.market_cashout_fetch_cancelled = False  # Cancellation flag
         self.market_cashout_positions = {}
-    
-    def _update_market_info(self):
-        """Update market info display."""
-        if not self.current_market:
-            self.market_info_name.config(text="Evento: -")
-            self.market_info_type.config(text="Mercato: -")
-            self.market_info_status.config(text="Stato: -")
-            self.market_info_matched.config(text="Volumi: -")
-            return
-        
-        event_name = self.current_event.get('name', '-') if self.current_event else '-'
-        self.market_info_name.config(text=f"Evento: {event_name[:25]}")
-        
-        market_name = self.current_market.get('marketName', '-')
-        self.market_info_type.config(text=f"Mercato: {market_name[:20]}")
-        
-        status = self.current_market.get('status', 'UNKNOWN')
-        is_live = self.current_market.get('inPlay', False)
-        status_text = f"LIVE - {status}" if is_live else status
-        self.market_info_status.config(text=f"Stato: {status_text}")
-        
-        total_matched = self.current_market.get('totalMatched', 0)
-        self.market_info_matched.config(text=f"Volumi: {total_matched:,.0f} EUR")
     
     def _update_market_cashout_positions(self):
         """Update cashout positions for current market."""
@@ -1179,8 +1140,7 @@ class PickfairApp:
             self.stream_var.set(True)
             self._start_streaming()
         
-        # Update market info panel and cashout positions
-        self._update_market_info()
+        # Update cashout positions
         self._update_market_cashout_positions()
         
         # Auto-start live tracking for cashout if enabled
