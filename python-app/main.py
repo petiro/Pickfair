@@ -1853,6 +1853,8 @@ class PickfairApp:
     
     def _show_about(self):
         """Show about dialog."""
+        from database import get_db_path
+        db_path = get_db_path()
         market_list = "\n".join([f"- {v}" for k, v in list(MARKET_TYPES.items())[:8]])
         messagebox.showinfo(
             "Informazioni",
@@ -1868,6 +1870,7 @@ class PickfairApp:
             "- Dashboard con saldo e scommesse\n"
             "- Prenotazione quote\n"
             "- Cashout automatico\n\n"
+            f"Database:\n{db_path}\n\n"
             "Requisiti:\n"
             "- Account Betfair Italia\n"
             "- Certificato SSL per API\n"
