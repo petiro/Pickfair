@@ -393,9 +393,28 @@ class PickfairApp:
         
         ttk.Label(dutch_frame, text="Selezioni:", style='Header.TLabel').pack(anchor=tk.W, pady=(10, 5))
         
-        self.selections_text = scrolledtext.ScrolledText(dutch_frame, height=10, width=30)
+        self.selections_text = scrolledtext.ScrolledText(dutch_frame, height=6, width=30)
         self.selections_text.pack(fill=tk.BOTH, expand=True)
         self.selections_text.config(state=tk.DISABLED)
+        
+        # Placed bets for current market
+        ttk.Label(dutch_frame, text="Scommesse Piazzate:", style='Header.TLabel').pack(anchor=tk.W, pady=(10, 2))
+        
+        placed_cols = ('sel', 'tipo', 'quota', 'stake')
+        self.placed_bets_tree = ttk.Treeview(dutch_frame, columns=placed_cols, show='headings', height=4)
+        self.placed_bets_tree.heading('sel', text='Selezione')
+        self.placed_bets_tree.heading('tipo', text='Tipo')
+        self.placed_bets_tree.heading('quota', text='Quota')
+        self.placed_bets_tree.heading('stake', text='Stake')
+        self.placed_bets_tree.column('sel', width=100)
+        self.placed_bets_tree.column('tipo', width=40)
+        self.placed_bets_tree.column('quota', width=50)
+        self.placed_bets_tree.column('stake', width=50)
+        
+        self.placed_bets_tree.tag_configure('back', foreground='#007bff')
+        self.placed_bets_tree.tag_configure('lay', foreground='#dc3545')
+        
+        self.placed_bets_tree.pack(fill=tk.X, pady=2)
         
         summary_frame = ttk.Frame(dutch_frame)
         summary_frame.pack(fill=tk.X, pady=10)
@@ -457,6 +476,63 @@ class PickfairApp:
         self.market_cashout_fetch_in_progress = False
         self.market_cashout_fetch_cancelled = False  # Cancellation flag
         self.market_cashout_positions = {}
+    
+    def _update_placed_bets(self):
+        """Update placed bets list for current market."""
+        # Clear existing
+        for item in self.placed_bets_tree.get_children():
+            self.placed_bets_tree.delete(item)
+        
+        if not self.client or not self.current_market:
+            return
+        
+        market_id = self.current_market.get('marketId')
+        if not market_id:
+            return
+        
+        # Build runner name lookup
+        runner_names = {}
+        for runner in self.current_market.get('runners', []):
+            runner_names[runner['selectionId']] = runner['runnerName']
+        
+        def fetch_bets():
+            try:
+                orders = self.client.get_current_orders()
+                matched = orders.get('matched', [])
+                
+                # Filter orders for current market
+                market_orders = [o for o in matched if o.get('marketId') == market_id]
+                
+                # Update UI in main thread
+                self.root.after(0, lambda: self._display_placed_bets(market_orders, runner_names))
+            except Exception as e:
+                print(f"Error fetching placed bets: {e}")
+        
+        threading.Thread(target=fetch_bets, daemon=True).start()
+    
+    def _display_placed_bets(self, orders, runner_names):
+        """Display placed bets in treeview."""
+        for item in self.placed_bets_tree.get_children():
+            self.placed_bets_tree.delete(item)
+        
+        for order in orders:
+            selection_id = order.get('selectionId')
+            side = order.get('side', 'BACK')
+            price = order.get('price', 0)
+            stake = order.get('sizeMatched', 0)
+            
+            runner_name = runner_names.get(selection_id, f"ID:{selection_id}")
+            if len(runner_name) > 15:
+                runner_name = runner_name[:15] + "..."
+            
+            tag = 'back' if side == 'BACK' else 'lay'
+            
+            self.placed_bets_tree.insert('', tk.END, values=(
+                runner_name,
+                side[:1],  # B or L
+                f"{price:.2f}",
+                f"{stake:.2f}"
+            ), tags=(tag,))
     
     def _update_market_cashout_positions(self):
         """Update cashout positions for current market."""
@@ -1138,7 +1214,8 @@ class PickfairApp:
             self.stream_var.set(True)
             self._start_streaming()
         
-        # Update cashout positions
+        # Update placed bets and cashout positions
+        self._update_placed_bets()
         self._update_market_cashout_positions()
         
         # Auto-start live tracking for cashout if enabled
