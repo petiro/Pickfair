@@ -1,0 +1,19 @@
+name: Build
+on:
+  push:
+    tags: ['v*']
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - run: pip install pyinstaller betfairlightweight telethon
+    - run: cd python-app && pyinstaller --onefile --windowed --name Pickfair main.py
+    - uses: softprops/action-gh-release@v1
+      with:
+        files: python-app/dist/Pickfair.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
