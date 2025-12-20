@@ -464,9 +464,7 @@ class PickfairApp:
         if self.market_cashout_fetch_in_progress:
             return
         
-        # Clear existing
-        for item in self.market_cashout_tree.get_children():
-            self.market_cashout_tree.delete(item)
+        # Don't clear existing items - keep old data visible until new data is ready
         
         if not self.client or not self.current_market:
             self.market_cashout_btn.config(state=tk.DISABLED)
