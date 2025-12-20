@@ -749,7 +749,7 @@ class PickfairApp:
                         )
                         messagebox.showinfo("Successo", f"Cashout eseguito!\nProfitto: {info['green_up']:+.2f}")
                         self._update_market_cashout_positions()
-                        self._update_balance_display()
+                        self._update_balance()
                     else:
                         messagebox.showerror("Errore", f"Cashout fallito: {result.get('error', 'Errore')}")
                 except Exception as e:
@@ -2518,7 +2518,7 @@ class PickfairApp:
                             messagebox.showinfo("Successo", f"Cashout eseguito!\nProfitto bloccato: {info['green_up']:+.2f}")
                             load_positions()
                             # Update dashboard stats
-                            self._update_balance_display()
+                            self._update_balance()
                         elif result.get('status') == 'ERROR':
                             messagebox.showerror("Errore", f"Cashout fallito: {result.get('error', 'Errore sconosciuto')}")
                         else:
