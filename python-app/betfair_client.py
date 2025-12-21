@@ -2,6 +2,7 @@
 Betfair API client using betfairlightweight library.
 Handles SSL certificate authentication for Betfair Italy.
 Includes Streaming API for real-time price updates.
+Optimized with caching and connection reuse.
 """
 
 import os
@@ -14,9 +15,16 @@ from betfairlightweight import filters
 from betfairlightweight.streaming import StreamListener
 from datetime import datetime, timedelta
 
+from api_cache import cache, AsyncRunner
+
 # Retry configuration
 MAX_RETRIES = 3
 RETRY_DELAY = 1.0  # seconds
+
+# Cache TTL configuration (seconds)
+CACHE_TTL_EVENTS = 60      # Events list - 1 minute
+CACHE_TTL_MARKETS = 30     # Markets list - 30 seconds
+CACHE_TTL_ACCOUNT = 10     # Account balance - 10 seconds
 
 def with_retry(func):
     """Decorator to add retry logic for API calls."""
@@ -233,9 +241,27 @@ class BetfairClient:
         self._cleanup_temp_files()
         self.client = None
     
+    def keep_alive(self):
+        """
+        Keep the session alive using Betfair's native keep-alive endpoint.
+        This is more efficient than making API calls just for keep-alive.
+        """
+        if not self.client:
+            raise Exception("Non connesso a Betfair")
+        
+        try:
+            self.client.keep_alive()
+            return True
+        except Exception as e:
+            raise Exception(f"Keep-alive fallito: {str(e)}")
+    
+    def is_connected(self):
+        """Check if client is connected with a valid session."""
+        return self.client is not None and self.client.session_token is not None
+    
     @with_retry
     def get_account_funds(self):
-        """Get account balance."""
+        """Get account balance - always fresh, no caching for accuracy."""
         if not self.client:
             raise Exception("Non connesso a Betfair")
         
@@ -246,11 +272,25 @@ class BetfairClient:
             'total': account.available_to_bet_balance + abs(account.exposure)
         }
     
+    def clear_cache(self, prefix=None):
+        """Clear API cache. If prefix is specified, only clear matching keys."""
+        if prefix:
+            cache.invalidate_prefix(prefix)
+        else:
+            cache.clear()
+    
     @with_retry
-    def get_football_events(self, include_inplay=True):
-        """Get upcoming and in-play football events."""
+    def get_football_events(self, include_inplay=True, use_cache=True):
+        """Get upcoming and in-play football events with caching."""
         if not self.client:
             raise Exception("Non connesso a Betfair")
+        
+        cache_key = f"events_{include_inplay}"
+        
+        if use_cache:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
         
         time_filter = filters.time_range(
             from_=datetime.now(),
@@ -308,13 +348,22 @@ class BetfairClient:
         
         # Sort: in-play first, then by date
         result.sort(key=lambda x: (not x.get('inPlay', False), x['openDate'] or ''))
+        
+        cache.set(cache_key, result, CACHE_TTL_EVENTS)
         return result
     
     @with_retry
-    def get_available_markets(self, event_id):
-        """Get all available markets for an event (no type restriction)."""
+    def get_available_markets(self, event_id, use_cache=True):
+        """Get all available markets for an event with caching."""
         if not self.client:
             raise Exception("Non connesso a Betfair")
+        
+        cache_key = f"markets_{event_id}"
+        
+        if use_cache:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
         
         # Fetch ALL markets without type restriction
         markets = self.client.betting.list_market_catalogue(
@@ -354,6 +403,7 @@ class BetfairClient:
                 'inPlay': is_inplay
             })
         
+        cache.set(cache_key, result, CACHE_TTL_MARKETS)
         return result
     
     @with_retry
