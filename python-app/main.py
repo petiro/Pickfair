@@ -17,7 +17,7 @@ from telegram_listener import TelegramListener, SignalQueue
 from auto_updater import check_for_updates, show_update_dialog
 
 APP_NAME = "Pickfair"
-APP_VERSION = "3.6.0"
+APP_VERSION = "3.10.0"
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 LIVE_REFRESH_INTERVAL = 5000  # 5 seconds for live odds
@@ -944,8 +944,8 @@ class PickfairApp:
         def keepalive():
             if self.client:
                 try:
-                    # Simple API call to keep session alive
-                    self.client.get_account_balance()
+                    # Use proper keep-alive method
+                    self.client.keep_alive()
                 except Exception as e:
                     print(f"Keepalive failed: {e}")
                     # Try to re-login silently if session expired
