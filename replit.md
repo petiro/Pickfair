@@ -8,6 +8,10 @@ BetDutcher is a betting automation platform for Betfair Exchange Italy. It enabl
 
 Preferred communication style: Simple, everyday language.
 
+**Release workflow**: Dopo ogni aggiornamento, fornire sempre istruzioni per creare una nuova release su GitHub con la versione successiva.
+
+**Current Version**: 3.9.2
+
 ## System Architecture
 
 ### Frontend Architecture
