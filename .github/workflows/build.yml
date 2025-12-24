@@ -2,6 +2,7 @@ name: Build
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -11,9 +12,12 @@ jobs:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
       with:
-        python-version: '3.8'
-    - run: pip install pyinstaller betfairlightweight telethon
-    - run: cd python-app && pyinstaller --onefile --windowed --name Pickfair main.py
-    - uses: softprops/action-gh-release@v1
+        python-version: '3.7'
+    - run: pip install pyinstaller betfairlightweight telethon customtkinter numpy requests
+    - name: Build executable
+      run: pyinstaller --onefile --windowed --name Pickfair main.py --hidden-import=customtkinter
+    - name: Upload to release
+      uses: softprops/action-gh-release@v1
       with:
-        files: python-app/dist/Pickfair.exe
+        files: dist/Pickfair.exe
+        token: ${{ secrets.RELEASE_TOKEN }}
