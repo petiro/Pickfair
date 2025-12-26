@@ -1,2 +1,0 @@
-# Pickfair
-Betfair dutching app
